@@ -3,6 +3,9 @@ const LIVE_META_KEY = "worldcup_probability_live_meta_v1";
 const ODDS_API_KEY_STORAGE = "worldcup_probability_odds_api_key_v1";
 const ODDS_SPORT_KEY_STORAGE = "worldcup_probability_odds_sport_key_v1";
 const ODDS_REGION_STORAGE = "worldcup_probability_odds_region_v1";
+const SUPABASE_URL_STORAGE = "worldcup_probability_supabase_url_v1";
+const SUPABASE_ANON_KEY_STORAGE = "worldcup_probability_supabase_anon_key_v1";
+const SUPABASE_JS_URL = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
 const WORLDCUP26_GAMES_URL = "https://worldcup26.ir/get/games";
 const THE_ODDS_API_BASE = "https://api.the-odds-api.com/v4";
 const DEMO_REFERENCE_AT = "2026-06-22T16:00:00Z";
@@ -324,6 +327,13 @@ const state = {
   liveMeta: loadLiveMeta(),
   isSyncingSchedule: false,
   isSyncingOdds: false,
+  supabase: null,
+  authSession: null,
+  authStatus: "未连接 Supabase",
+  authNotice: "",
+  myPredictions: [],
+  publicPredictions: [],
+  isLoadingPredictions: false,
 };
 
 const els = {
@@ -342,6 +352,18 @@ const els = {
   oddsApiKeyInput: document.getElementById("oddsApiKeyInput"),
   oddsSportKeyInput: document.getElementById("oddsSportKeyInput"),
   oddsRegionSelect: document.getElementById("oddsRegionSelect"),
+  authStatus: document.getElementById("authStatus"),
+  supabaseUrlInput: document.getElementById("supabaseUrlInput"),
+  supabaseAnonKeyInput: document.getElementById("supabaseAnonKeyInput"),
+  connectSupabaseButton: document.getElementById("connectSupabaseButton"),
+  authEmailInput: document.getElementById("authEmailInput"),
+  authPasswordInput: document.getElementById("authPasswordInput"),
+  signInButton: document.getElementById("signInButton"),
+  signUpButton: document.getElementById("signUpButton"),
+  signOutButton: document.getElementById("signOutButton"),
+  refreshPredictionsButton: document.getElementById("refreshPredictionsButton"),
+  myPredictionsList: document.getElementById("myPredictionsList"),
+  publicPredictionsList: document.getElementById("publicPredictionsList"),
   addMatchButton: document.getElementById("addMatchButton"),
   importButton: document.getElementById("importButton"),
   exportButton: document.getElementById("exportButton"),
@@ -357,9 +379,15 @@ function init() {
   els.oddsApiKeyInput.value = localStorage.getItem(ODDS_API_KEY_STORAGE) || "";
   els.oddsSportKeyInput.value = localStorage.getItem(ODDS_SPORT_KEY_STORAGE) || "soccer_fifa_world_cup";
   els.oddsRegionSelect.value = localStorage.getItem(ODDS_REGION_STORAGE) || "us";
+  const supabaseConfig = getSupabaseConfig();
+  els.supabaseUrlInput.value = supabaseConfig.url;
+  els.supabaseAnonKeyInput.value = supabaseConfig.anonKey;
   renderGroupOptions();
   bindEvents();
   render();
+  if (supabaseConfig.url && supabaseConfig.anonKey) {
+    connectSupabase();
+  }
 }
 
 function bindEvents() {
@@ -425,6 +453,11 @@ function bindEvents() {
   els.oddsRegionSelect.addEventListener("change", () => {
     localStorage.setItem(ODDS_REGION_STORAGE, els.oddsRegionSelect.value);
   });
+  els.connectSupabaseButton.addEventListener("click", connectSupabase);
+  els.signInButton.addEventListener("click", signIn);
+  els.signUpButton.addEventListener("click", signUp);
+  els.signOutButton.addEventListener("click", signOut);
+  els.refreshPredictionsButton.addEventListener("click", loadPredictions);
   els.addMatchButton.addEventListener("click", addMatch);
   els.importButton.addEventListener("click", () => els.importFile.click());
   els.importFile.addEventListener("change", importData);
@@ -441,9 +474,11 @@ function bindEvents() {
 function render() {
   renderTabs();
   renderLiveStatus();
+  renderAuthStatus();
   renderSummary();
   renderList();
   renderDetail(getSelectedMatch());
+  renderPredictionLists();
 }
 
 function renderTabs() {
@@ -468,6 +503,15 @@ function renderLiveStatus() {
   els.syncScheduleButton.textContent = state.isSyncingSchedule ? "同步中..." : "同步赛程/比分";
   els.syncOddsButton.disabled = state.isSyncingOdds;
   els.syncOddsButton.textContent = state.isSyncingOdds ? "同步中..." : "同步赔率";
+}
+
+function renderAuthStatus() {
+  const user = state.authSession?.user;
+  els.authStatus.textContent = state.authNotice || (user ? `已登录：${user.email || user.id}` : state.authStatus);
+  els.signOutButton.disabled = !user;
+  els.signInButton.disabled = !state.supabase || Boolean(user);
+  els.signUpButton.disabled = !state.supabase || Boolean(user);
+  els.refreshPredictionsButton.disabled = !state.supabase || state.isLoadingPredictions;
 }
 
 function addMatch() {
@@ -514,6 +558,8 @@ function handleDetailAction(event) {
     clearSelectedResult(match);
   } else if (action === "delete-match") {
     deleteSelectedMatch(match);
+  } else if (action === "submit-prediction") {
+    submitPrediction(match);
   }
 }
 
@@ -666,6 +712,205 @@ async function syncOdds() {
     state.isSyncingOdds = false;
     render();
   }
+}
+
+async function connectSupabase() {
+  const url = cleanText(els.supabaseUrlInput.value || getSupabaseConfig().url);
+  const anonKey = cleanText(els.supabaseAnonKeyInput.value || getSupabaseConfig().anonKey);
+  if (!url || !anonKey) {
+    state.authStatus = "未连接 Supabase";
+    state.authNotice = "请输入 Supabase URL 和 anon key。";
+    render();
+    return;
+  }
+
+  try {
+    state.authNotice = "正在连接 Supabase...";
+    renderAuthStatus();
+    const { createClient } = await import(SUPABASE_JS_URL);
+    state.supabase = createClient(url, anonKey);
+    localStorage.setItem(SUPABASE_URL_STORAGE, url);
+    localStorage.setItem(SUPABASE_ANON_KEY_STORAGE, anonKey);
+
+    const { data, error } = await state.supabase.auth.getSession();
+    if (error) throw error;
+    state.authSession = data.session;
+    state.authStatus = data.session ? `已登录：${data.session.user.email || data.session.user.id}` : "Supabase 已连接";
+    state.authNotice = "";
+
+    if (state.authSubscription) state.authSubscription.unsubscribe();
+    const { data: listener } = state.supabase.auth.onAuthStateChange((_event, session) => {
+      state.authSession = session;
+      state.authStatus = session ? `已登录：${session.user.email || session.user.id}` : "Supabase 已连接";
+      state.authNotice = "";
+      loadPredictions();
+    });
+    state.authSubscription = listener.subscription;
+    await loadPredictions();
+  } catch (error) {
+    state.supabase = null;
+    state.authSession = null;
+    state.authStatus = "Supabase 连接失败";
+    state.authNotice = getErrorMessage(error);
+    render();
+  }
+}
+
+async function signUp() {
+  if (!state.supabase) await connectSupabase();
+  if (!state.supabase) return;
+  const email = cleanText(els.authEmailInput.value);
+  const password = String(els.authPasswordInput.value || "");
+  if (!email || password.length < 6) {
+    state.authNotice = "请输入邮箱和至少 6 位密码。";
+    render();
+    return;
+  }
+  const { data, error } = await state.supabase.auth.signUp({ email, password });
+  if (error) {
+    state.authNotice = error.message;
+  } else {
+    state.authSession = data.session;
+    state.authNotice = data.session ? "注册并登录成功。" : "注册成功，请按 Supabase 邮件设置完成验证。";
+  }
+  await loadPredictions();
+}
+
+async function signIn() {
+  if (!state.supabase) await connectSupabase();
+  if (!state.supabase) return;
+  const email = cleanText(els.authEmailInput.value);
+  const password = String(els.authPasswordInput.value || "");
+  if (!email || !password) {
+    state.authNotice = "请输入邮箱和密码。";
+    render();
+    return;
+  }
+  const { data, error } = await state.supabase.auth.signInWithPassword({ email, password });
+  if (error) {
+    state.authNotice = error.message;
+  } else {
+    state.authSession = data.session;
+    state.authNotice = "登录成功。";
+  }
+  await loadPredictions();
+}
+
+async function signOut() {
+  if (!state.supabase) return;
+  const { error } = await state.supabase.auth.signOut();
+  if (error) state.authNotice = error.message;
+  state.authSession = null;
+  state.myPredictions = [];
+  state.authNotice = error ? state.authNotice : "已退出。";
+  await loadPredictions();
+}
+
+async function submitPrediction(match) {
+  if (!state.supabase || !state.authSession?.user) {
+    state.authNotice = "请先连接 Supabase 并登录。";
+    render();
+    return;
+  }
+  if (!isMatchPredictable(match)) {
+    state.authNotice = "只能预测未开赛的比赛。";
+    render();
+    return;
+  }
+
+  const form = els.matchDetail.querySelector("[data-prediction-form]");
+  if (!form) return;
+  const payload = buildPredictionPayload(match, new FormData(form));
+  if (!payload) {
+    render();
+    return;
+  }
+
+  const { error } = await state.supabase
+    .from("predictions")
+    .upsert(payload, { onConflict: "user_id,match_id" });
+  if (error) {
+    state.authNotice = `预测提交失败：${error.message}`;
+    render();
+    return;
+  }
+  state.authNotice = "预测已保存。";
+  await loadPredictions();
+}
+
+function buildPredictionPayload(match, formData) {
+  const predictionType = cleanText(formData.get("predictionType"));
+  const isPublic = formData.get("isPublic") === "on";
+  const base = {
+    user_id: state.authSession.user.id,
+    match_id: match.id,
+    match_kickoff_utc: new Date(match.kickoffUtc).toISOString(),
+    match_label: `${match.home} vs ${match.away}`,
+    home_team: match.home,
+    away_team: match.away,
+    prediction_type: predictionType,
+    is_public: isPublic,
+  };
+
+  if (predictionType === "outcome") {
+    const outcome = cleanText(formData.get("outcome"));
+    if (!["home", "draw", "away"].includes(outcome)) {
+      state.authNotice = "请选择有效的胜平负预测。";
+      return null;
+    }
+    return { ...base, outcome, home_score: null, away_score: null };
+  }
+
+  if (predictionType === "score") {
+    const homeScore = Number(formData.get("predictedHomeScore"));
+    const awayScore = Number(formData.get("predictedAwayScore"));
+    if (!Number.isInteger(homeScore) || !Number.isInteger(awayScore) || homeScore < 0 || awayScore < 0) {
+      state.authNotice = "请输入有效的比分预测。";
+      return null;
+    }
+    return { ...base, outcome: null, home_score: homeScore, away_score: awayScore };
+  }
+
+  state.authNotice = "请选择预测类型。";
+  return null;
+}
+
+async function loadPredictions() {
+  if (!state.supabase) {
+    state.myPredictions = [];
+    state.publicPredictions = [];
+    render();
+    return;
+  }
+  state.isLoadingPredictions = true;
+  renderAuthStatus();
+
+  const publicQuery = state.supabase
+    .from("predictions")
+    .select("*")
+    .eq("is_public", true)
+    .order("created_at", { ascending: false })
+    .limit(80);
+
+  const myQuery = state.authSession?.user
+    ? state.supabase
+        .from("predictions")
+        .select("*")
+        .eq("user_id", state.authSession.user.id)
+        .order("created_at", { ascending: false })
+        .limit(80)
+    : Promise.resolve({ data: [], error: null });
+
+  const [publicResult, myResult] = await Promise.all([publicQuery, myQuery]);
+  state.isLoadingPredictions = false;
+
+  if (publicResult.error || myResult.error) {
+    state.authNotice = `读取预测失败：${publicResult.error?.message || myResult.error?.message}`;
+  } else {
+    state.publicPredictions = publicResult.data || [];
+    state.myPredictions = myResult.data || [];
+  }
+  render();
 }
 
 async function fetchJson(url) {
@@ -992,6 +1237,8 @@ function renderDetail(match) {
           <span class="custom-probability">${state.scoreHome}-${state.scoreAway}：${formatPercent(customProbability)}</span>
         </div>
 
+        ${renderPredictionForm(match)}
+
         <div class="model-table">
           <div><span>概率快照</span><strong>${escapeHtml(formatDateFull(match.generatedAt || match.kickoffUtc))}</strong></div>
           <div><span>模型</span><strong>Poisson xG v1</strong></div>
@@ -1070,6 +1317,59 @@ function renderEditor(match) {
   `;
 }
 
+function renderPredictionForm(match) {
+  const user = state.authSession?.user;
+  const canPredict = isMatchPredictable(match);
+  const disabled = !user || !state.supabase || !canPredict;
+  const disabledAttr = disabled ? "disabled" : "";
+  const status = !state.supabase
+    ? "未连接 Supabase"
+    : !user
+      ? "登录后可提交预测"
+      : !canPredict
+        ? "比赛已开始或已完赛"
+        : "可提交或更新预测";
+
+  return `
+    <form class="prediction-form" data-prediction-form>
+      <div class="prediction-form-head">
+        <h2 class="section-title">提交预测</h2>
+        <span>${escapeHtml(status)}</span>
+      </div>
+      <div class="prediction-controls">
+        <label>
+          类型
+          <select name="predictionType" ${disabledAttr}>
+            <option value="outcome">胜平负</option>
+            <option value="score">具体比分</option>
+          </select>
+        </label>
+        <label>
+          胜平负
+          <select name="outcome" ${disabledAttr}>
+            <option value="home">${escapeHtml(match.homeCode || "A")} 胜</option>
+            <option value="draw">平局</option>
+            <option value="away">${escapeHtml(match.awayCode || "B")} 胜</option>
+          </select>
+        </label>
+        <label>
+          A队进球
+          <input name="predictedHomeScore" type="number" min="0" max="20" step="1" value="1" ${disabledAttr} />
+        </label>
+        <label>
+          B队进球
+          <input name="predictedAwayScore" type="number" min="0" max="20" step="1" value="1" ${disabledAttr} />
+        </label>
+        <label class="public-toggle">
+          <input name="isPublic" type="checkbox" ${disabledAttr} />
+          公开
+        </label>
+        <button type="button" class="action-button primary" data-action="submit-prediction" ${disabledAttr}>提交</button>
+      </div>
+    </form>
+  `;
+}
+
 function renderInput(label, name, value, type = "text", className = "", step = "", min = "") {
   return `
     <label class="edit-field ${className}">
@@ -1127,6 +1427,53 @@ function renderScoreGrid(probability) {
   });
 
   return `<div class="score-grid">${cells.join("")}</div>`;
+}
+
+function renderPredictionLists() {
+  els.myPredictionsList.innerHTML = renderPredictionList({
+    predictions: state.myPredictions,
+    emptyText: state.authSession?.user ? "还没有预测记录" : "登录后查看自己的历史预测",
+    showOwner: false,
+  });
+  els.publicPredictionsList.innerHTML = renderPredictionList({
+    predictions: state.publicPredictions,
+    emptyText: state.supabase ? "暂无公开预测" : "连接 Supabase 后查看公开预测",
+    showOwner: true,
+  });
+}
+
+function renderPredictionList({ predictions, emptyText, showOwner }) {
+  if (state.isLoadingPredictions) return `<div class="empty-list compact-empty">正在加载预测...</div>`;
+  if (!predictions.length) return `<div class="empty-list compact-empty">${escapeHtml(emptyText)}</div>`;
+  return predictions.map((prediction) => renderPredictionCard(prediction, showOwner)).join("");
+}
+
+function renderPredictionCard(prediction, showOwner) {
+  return `
+    <article class="prediction-card">
+      <div class="prediction-card-head">
+        <strong>${escapeHtml(prediction.match_label)}</strong>
+        <span>${escapeHtml(formatDate(prediction.match_kickoff_utc))}</span>
+      </div>
+      <div class="prediction-card-body">
+        <span>${escapeHtml(formatPrediction(prediction))}</span>
+        <span>${prediction.is_public ? "公开" : "私密"}</span>
+      </div>
+      <div class="prediction-card-foot">
+        <span>${escapeHtml(formatDateFull(prediction.created_at))}</span>
+        ${showOwner ? `<span>用户 ${escapeHtml(shortUserId(prediction.user_id))}</span>` : ""}
+      </div>
+    </article>
+  `;
+}
+
+function formatPrediction(prediction) {
+  if (prediction.prediction_type === "score") {
+    return `比分 ${prediction.home_score}-${prediction.away_score}`;
+  }
+  if (prediction.outcome === "home") return `${prediction.home_team} 胜`;
+  if (prediction.outcome === "away") return `${prediction.away_team} 胜`;
+  return "平局";
 }
 
 function getVisibleMatches() {
@@ -1647,6 +1994,24 @@ function getInitialReference() {
   const start = new Date("2026-06-11T00:00:00Z");
   const end = new Date("2026-07-20T00:00:00Z");
   return now >= start && now <= end ? now : new Date(DEMO_REFERENCE_AT);
+}
+
+function getSupabaseConfig() {
+  const pageConfig = window.WORLD_CUP_LOOKUP_SUPABASE || {};
+  return {
+    url: localStorage.getItem(SUPABASE_URL_STORAGE) || pageConfig.url || "",
+    anonKey: localStorage.getItem(SUPABASE_ANON_KEY_STORAGE) || pageConfig.anonKey || "",
+  };
+}
+
+function isMatchPredictable(match) {
+  if (!match) return false;
+  const kickoff = new Date(match.kickoffUtc);
+  return kickoff > new Date() && match.liveStatus !== "LIVE" && match.liveStatus !== "FINISHED";
+}
+
+function shortUserId(value) {
+  return String(value || "").slice(0, 8);
 }
 
 function parseLocalDateTime(value) {

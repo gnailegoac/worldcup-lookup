@@ -73,6 +73,23 @@
         </div>
       </section>
 
+      <section class="account-panel" aria-label="用户账号">
+        <div class="account-status">
+          <span class="live-label">账号</span>
+          <strong id="authStatus">未连接 Supabase</strong>
+        </div>
+        <div class="account-controls">
+          <input id="supabaseUrlInput" type="url" placeholder="Supabase URL" autocomplete="off" />
+          <input id="supabaseAnonKeyInput" type="password" placeholder="Supabase anon key" autocomplete="off" />
+          <button class="action-button" id="connectSupabaseButton" type="button">连接</button>
+          <input id="authEmailInput" type="email" placeholder="Email" autocomplete="email" />
+          <input id="authPasswordInput" type="password" placeholder="Password" autocomplete="current-password" />
+          <button class="action-button primary" id="signInButton" type="button">登录</button>
+          <button class="action-button" id="signUpButton" type="button">注册</button>
+          <button class="action-button" id="signOutButton" type="button">退出</button>
+        </div>
+      </section>
+
       <nav class="tabs" aria-label="比赛范围">
         <button class="tab is-active" type="button" data-view="upcoming">接下来</button>
         <button class="tab" type="button" data-view="history">历史</button>
@@ -98,8 +115,25 @@
         <aside class="match-list" aria-label="比赛列表" id="matchList"></aside>
         <section class="detail-panel" aria-live="polite" id="matchDetail"></section>
       </section>
+
+      <section class="predictions-area" aria-label="用户预测">
+        <section class="prediction-list-panel">
+          <div class="prediction-list-head">
+            <h2 class="section-title">我的历史预测</h2>
+            <button class="icon-button small" id="refreshPredictionsButton" type="button" aria-label="刷新预测" title="刷新预测">↻</button>
+          </div>
+          <div id="myPredictionsList" class="prediction-list"></div>
+        </section>
+        <section class="prediction-list-panel">
+          <div class="prediction-list-head">
+            <h2 class="section-title">公开预测</h2>
+          </div>
+          <div id="publicPredictionsList" class="prediction-list"></div>
+        </section>
+      </section>
     </main>
 
+    <script src="supabase-config.js"></script>
     <script src="app.js" defer></script>
   </body>
 </html>

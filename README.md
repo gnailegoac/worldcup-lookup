@@ -17,6 +17,22 @@
 
 不要使用 localtunnel/ngrok 作为正式发布方式；它们依赖本机进程和临时隧道，稳定性不足。
 
+## 用户预测后端
+
+注册、登录、我的历史预测、公开预测需要 Supabase。
+
+1. 创建 Supabase 项目。
+2. 在 Supabase SQL Editor 运行 `supabase/schema.sql`。
+3. 在 `supabase-config.js` 填入项目的 URL 和 anon key，然后重新发布；也可以在页面顶部账号区域手动输入 URL 和 anon key 后点击“连接”。
+4. Supabase Auth 里启用 Email/Password 登录。
+
+权限设计：
+
+- 用户只能插入、更新、删除自己的预测。
+- 用户可以读取自己的全部预测。
+- 所有人可以读取 `is_public = true` 的公开预测。
+- 每个用户对每场比赛只有一条预测；重复提交会更新原记录。
+
 ## 实时数据
 
 页面顶部“实时数据”面板支持两个来源：
