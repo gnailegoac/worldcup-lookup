@@ -5,7 +5,7 @@ const ODDS_SPORT_KEY_STORAGE = "worldcup_probability_odds_sport_key_v1";
 const ODDS_REGION_STORAGE = "worldcup_probability_odds_region_v1";
 const SUPABASE_URL_STORAGE = "worldcup_probability_supabase_url_v1";
 const SUPABASE_ANON_KEY_STORAGE = "worldcup_probability_supabase_anon_key_v1";
-const SUPABASE_JS_URL = "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
+const SUPABASE_SESSION_STORAGE = "worldcup_probability_supabase_session_v1";
 const WORLDCUP26_GAMES_URL = "https://worldcup26.ir/get/games";
 const THE_ODDS_API_BASE = "https://api.the-odds-api.com/v4";
 const DEMO_REFERENCE_AT = "2026-06-22T16:00:00Z";
@@ -334,6 +334,7 @@ const state = {
   myPredictions: [],
   publicPredictions: [],
   isLoadingPredictions: false,
+  isAuthBusy: false,
 };
 
 const els = {
@@ -508,10 +509,13 @@ function renderLiveStatus() {
 function renderAuthStatus() {
   const user = state.authSession?.user;
   els.authStatus.textContent = state.authNotice || (user ? `已登录：${user.email || user.id}` : state.authStatus);
-  els.signOutButton.disabled = !user;
-  els.signInButton.disabled = !state.supabase || Boolean(user);
-  els.signUpButton.disabled = !state.supabase || Boolean(user);
+  els.connectSupabaseButton.disabled = state.isAuthBusy;
+  els.signOutButton.disabled = !user || state.isAuthBusy;
+  els.signInButton.disabled = Boolean(user) || state.isAuthBusy;
+  els.signUpButton.disabled = Boolean(user) || state.isAuthBusy;
   els.refreshPredictionsButton.disabled = !state.supabase || state.isLoadingPredictions;
+  els.signInButton.textContent = state.isAuthBusy ? "处理中..." : "登录";
+  els.signUpButton.textContent = state.isAuthBusy ? "处理中..." : "注册";
 }
 
 function addMatch() {
@@ -725,10 +729,10 @@ async function connectSupabase() {
   }
 
   try {
+    state.isAuthBusy = true;
     state.authNotice = "正在连接 Supabase...";
     renderAuthStatus();
-    const { createClient } = await import(SUPABASE_JS_URL);
-    state.supabase = createClient(url, anonKey);
+    state.supabase = createSupabaseRestClient(url, anonKey);
     localStorage.setItem(SUPABASE_URL_STORAGE, url);
     localStorage.setItem(SUPABASE_ANON_KEY_STORAGE, anonKey);
 
@@ -753,6 +757,9 @@ async function connectSupabase() {
     state.authStatus = "Supabase 连接失败";
     state.authNotice = getErrorMessage(error);
     render();
+  } finally {
+    state.isAuthBusy = false;
+    render();
   }
 }
 
@@ -766,7 +773,11 @@ async function signUp() {
     render();
     return;
   }
+  state.isAuthBusy = true;
+  state.authNotice = "正在注册...";
+  renderAuthStatus();
   const { data, error } = await state.supabase.auth.signUp({ email, password });
+  state.isAuthBusy = false;
   if (error) {
     state.authNotice = error.message;
   } else {
@@ -786,7 +797,11 @@ async function signIn() {
     render();
     return;
   }
+  state.isAuthBusy = true;
+  state.authNotice = "正在登录...";
+  renderAuthStatus();
   const { data, error } = await state.supabase.auth.signInWithPassword({ email, password });
+  state.isAuthBusy = false;
   if (error) {
     state.authNotice = error.message;
   } else {
@@ -798,7 +813,11 @@ async function signIn() {
 
 async function signOut() {
   if (!state.supabase) return;
+  state.isAuthBusy = true;
+  state.authNotice = "正在退出...";
+  renderAuthStatus();
   const { error } = await state.supabase.auth.signOut();
+  state.isAuthBusy = false;
   if (error) state.authNotice = error.message;
   state.authSession = null;
   state.myPredictions = [];
@@ -911,6 +930,200 @@ async function loadPredictions() {
     state.myPredictions = myResult.data || [];
   }
   render();
+}
+
+function createSupabaseRestClient(projectUrl, apiKey) {
+  const baseUrl = projectUrl.replace(/\/+$/, "");
+  const sessionKey = `${SUPABASE_SESSION_STORAGE}:${baseUrl}`;
+  const listeners = new Set();
+
+  const getStoredSession = () => {
+    try {
+      const stored = localStorage.getItem(sessionKey);
+      return stored ? JSON.parse(stored) : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const notify = (event, session) => {
+    listeners.forEach((listener) => listener(event, session));
+  };
+
+  const saveSession = (session, event = "SIGNED_IN") => {
+    if (session) localStorage.setItem(sessionKey, JSON.stringify(session));
+    else localStorage.removeItem(sessionKey);
+    notify(event, session);
+  };
+
+  const request = async (path, options = {}) => {
+    const session = getStoredSession();
+    const response = await fetch(`${baseUrl}${path}`, {
+      ...options,
+      headers: {
+        apikey: apiKey,
+        Authorization: `Bearer ${session?.access_token || apiKey}`,
+        "Content-Type": "application/json",
+        ...(options.headers || {}),
+      },
+    });
+    const text = await response.text();
+    const payload = text ? JSON.parse(text) : null;
+    if (!response.ok) {
+      throw new Error(payload?.error_description || payload?.error || payload?.msg || payload?.message || `HTTP ${response.status}`);
+    }
+    return payload;
+  };
+
+  return {
+    auth: {
+      async getSession() {
+        return { data: { session: getStoredSession() }, error: null };
+      },
+      onAuthStateChange(callback) {
+        listeners.add(callback);
+        return {
+          data: {
+            subscription: {
+              unsubscribe: () => listeners.delete(callback),
+            },
+          },
+        };
+      },
+      async signUp({ email, password }) {
+        try {
+          const payload = await request("/auth/v1/signup", {
+            method: "POST",
+            body: JSON.stringify({ email, password }),
+          });
+          const session = normalizeSupabaseSession(payload);
+          if (session) saveSession(session, "SIGNED_IN");
+          return { data: { session, user: payload.user || session?.user || null }, error: null };
+        } catch (error) {
+          return { data: { session: null, user: null }, error };
+        }
+      },
+      async signInWithPassword({ email, password }) {
+        try {
+          const payload = await request("/auth/v1/token?grant_type=password", {
+            method: "POST",
+            body: JSON.stringify({ email, password }),
+          });
+          const session = normalizeSupabaseSession(payload);
+          if (session) saveSession(session, "SIGNED_IN");
+          return { data: { session, user: session?.user || null }, error: null };
+        } catch (error) {
+          return { data: { session: null, user: null }, error };
+        }
+      },
+      async signOut() {
+        try {
+          await request("/auth/v1/logout", { method: "POST" });
+        } catch {
+          // A local sign-out is still valid when the remote token is already expired.
+        }
+        saveSession(null, "SIGNED_OUT");
+        return { error: null };
+      },
+    },
+    from(table) {
+      return new SupabaseRestQuery(baseUrl, apiKey, table, getStoredSession);
+    },
+  };
+}
+
+class SupabaseRestQuery {
+  constructor(baseUrl, apiKey, table, getStoredSession) {
+    this.baseUrl = baseUrl;
+    this.apiKey = apiKey;
+    this.table = table;
+    this.getStoredSession = getStoredSession;
+    this.params = new URLSearchParams();
+  }
+
+  select(columns) {
+    this.params.set("select", columns);
+    return this;
+  }
+
+  eq(column, value) {
+    this.params.set(column, `eq.${value}`);
+    return this;
+  }
+
+  order(column, options = {}) {
+    this.params.set("order", `${column}.${options.ascending ? "asc" : "desc"}`);
+    return this;
+  }
+
+  limit(value) {
+    this.params.set("limit", String(value));
+    return this;
+  }
+
+  async upsert(payload, options = {}) {
+    const params = new URLSearchParams();
+    if (options.onConflict) params.set("on_conflict", options.onConflict);
+    return this.execute("POST", params, payload, {
+      Prefer: "resolution=merge-duplicates,return=representation",
+    });
+  }
+
+  then(resolve, reject) {
+    return this.execute("GET", this.params).then(resolve, reject);
+  }
+
+  async execute(method, params, body, extraHeaders = {}) {
+    const session = this.getStoredSession();
+    const url = `${this.baseUrl}/rest/v1/${encodeURIComponent(this.table)}?${params.toString()}`;
+    try {
+      const response = await fetch(url, {
+        method,
+        headers: {
+          apikey: this.apiKey,
+          Authorization: `Bearer ${session?.access_token || this.apiKey}`,
+          "Content-Type": "application/json",
+          ...extraHeaders,
+        },
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      const text = await response.text();
+      const data = text ? JSON.parse(text) : null;
+      if (!response.ok) {
+        throw new Error(data?.error_description || data?.error || data?.message || data?.msg || `HTTP ${response.status}`);
+      }
+      return { data, error: null };
+    } catch (error) {
+      return { data: null, error };
+    }
+  }
+}
+
+function normalizeSupabaseSession(payload) {
+  if (!payload?.access_token) return null;
+  const expiresAt =
+    payload.expires_at ||
+    (payload.expires_in ? Math.floor(Date.now() / 1000) + Number(payload.expires_in) : null);
+  return {
+    access_token: payload.access_token,
+    refresh_token: payload.refresh_token || "",
+    token_type: payload.token_type || "bearer",
+    expires_in: payload.expires_in || null,
+    expires_at: expiresAt,
+    user: payload.user || decodeJwtUser(payload.access_token),
+  };
+}
+
+function decodeJwtUser(token) {
+  try {
+    const payload = JSON.parse(atob(token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
+    return {
+      id: payload.sub,
+      email: payload.email,
+    };
+  } catch {
+    return null;
+  }
 }
 
 async function fetchJson(url) {
