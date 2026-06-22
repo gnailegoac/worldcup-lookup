@@ -6,7 +6,7 @@ const ODDS_REGION_STORAGE = "worldcup_probability_odds_region_v1";
 const SUPABASE_URL_STORAGE = "worldcup_probability_supabase_url_v1";
 const SUPABASE_ANON_KEY_STORAGE = "worldcup_probability_supabase_anon_key_v1";
 const SUPABASE_SESSION_STORAGE = "worldcup_probability_supabase_session_v1";
-const DISPLAY_NAME_STORAGE = "worldcup_probability_display_name_v1";
+const USERNAME_STORAGE = "worldcup_probability_username_v1";
 const WORLDCUP26_GAMES_URL = "https://worldcup26.ir/get/games";
 const THE_ODDS_API_BASE = "https://api.the-odds-api.com/v4";
 const DEMO_REFERENCE_AT = "2026-06-22T16:00:00Z";
@@ -355,11 +355,10 @@ const els = {
   oddsSportKeyInput: document.getElementById("oddsSportKeyInput"),
   oddsRegionSelect: document.getElementById("oddsRegionSelect"),
   authStatus: document.getElementById("authStatus"),
-  supabaseUrlInput: document.getElementById("supabaseUrlInput"),
-  supabaseAnonKeyInput: document.getElementById("supabaseAnonKeyInput"),
-  connectSupabaseButton: document.getElementById("connectSupabaseButton"),
-  displayNameInput: document.getElementById("displayNameInput"),
-  anonymousSignInButton: document.getElementById("anonymousSignInButton"),
+  usernameInput: document.getElementById("usernameInput"),
+  passwordInput: document.getElementById("passwordInput"),
+  loginButton: document.getElementById("loginButton"),
+  registerButton: document.getElementById("registerButton"),
   signOutButton: document.getElementById("signOutButton"),
   refreshPredictionsButton: document.getElementById("refreshPredictionsButton"),
   myPredictionsList: document.getElementById("myPredictionsList"),
@@ -380,9 +379,7 @@ function init() {
   els.oddsSportKeyInput.value = localStorage.getItem(ODDS_SPORT_KEY_STORAGE) || "soccer_fifa_world_cup";
   els.oddsRegionSelect.value = localStorage.getItem(ODDS_REGION_STORAGE) || "us";
   const supabaseConfig = getSupabaseConfig();
-  els.supabaseUrlInput.value = supabaseConfig.url;
-  els.supabaseAnonKeyInput.value = supabaseConfig.anonKey;
-  els.displayNameInput.value = localStorage.getItem(DISPLAY_NAME_STORAGE) || "";
+  els.usernameInput.value = localStorage.getItem(USERNAME_STORAGE) || "";
   renderGroupOptions();
   bindEvents();
   render();
@@ -454,10 +451,13 @@ function bindEvents() {
   els.oddsRegionSelect.addEventListener("change", () => {
     localStorage.setItem(ODDS_REGION_STORAGE, els.oddsRegionSelect.value);
   });
-  els.connectSupabaseButton.addEventListener("click", connectSupabase);
-  els.anonymousSignInButton.addEventListener("click", signInWithNickname);
-  els.displayNameInput.addEventListener("change", () => {
-    localStorage.setItem(DISPLAY_NAME_STORAGE, cleanText(els.displayNameInput.value));
+  els.loginButton.addEventListener("click", loginWithUsername);
+  els.registerButton.addEventListener("click", registerWithUsername);
+  els.usernameInput.addEventListener("change", () => {
+    localStorage.setItem(USERNAME_STORAGE, cleanText(els.usernameInput.value));
+  });
+  els.passwordInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") loginWithUsername();
   });
   els.signOutButton.addEventListener("click", signOut);
   els.refreshPredictionsButton.addEventListener("click", loadPredictions);
@@ -512,11 +512,12 @@ function renderAuthStatus() {
   const user = state.authSession?.user;
   const name = getCurrentDisplayName();
   els.authStatus.textContent = state.authNotice || (user ? `已进入：${name}` : state.authStatus);
-  els.connectSupabaseButton.disabled = state.isAuthBusy;
   els.signOutButton.disabled = !user || state.isAuthBusy;
-  els.anonymousSignInButton.disabled = Boolean(user) || state.isAuthBusy;
+  els.loginButton.disabled = Boolean(user) || state.isAuthBusy || !state.supabase;
+  els.registerButton.disabled = Boolean(user) || state.isAuthBusy || !state.supabase;
   els.refreshPredictionsButton.disabled = !state.supabase || state.isLoadingPredictions;
-  els.anonymousSignInButton.textContent = state.isAuthBusy ? "处理中..." : "用昵称进入";
+  els.loginButton.textContent = state.isAuthBusy ? "处理中..." : "登录";
+  els.registerButton.textContent = state.isAuthBusy ? "处理中..." : "注册";
 }
 
 function addMatch() {
@@ -720,11 +721,10 @@ async function syncOdds() {
 }
 
 async function connectSupabase() {
-  const url = cleanText(els.supabaseUrlInput.value || getSupabaseConfig().url);
-  const anonKey = cleanText(els.supabaseAnonKeyInput.value || getSupabaseConfig().anonKey);
+  const { url, anonKey } = getSupabaseConfig();
   if (!url || !anonKey) {
     state.authStatus = "未连接 Supabase";
-    state.authNotice = "请输入 Supabase URL 和 anon key。";
+    state.authNotice = "站点缺少 Supabase 配置。";
     render();
     return;
   }
@@ -764,28 +764,57 @@ async function connectSupabase() {
   }
 }
 
-async function signInWithNickname() {
+async function registerWithUsername() {
   if (!state.supabase) await connectSupabase();
   if (!state.supabase) return;
-  const displayName = cleanText(els.displayNameInput.value);
-  if (displayName.length < 2) {
-    state.authNotice = "请输入至少 2 个字符的昵称。";
+  const credentials = readUsernamePassword();
+  if (!credentials) {
     render();
     return;
   }
-  localStorage.setItem(DISPLAY_NAME_STORAGE, displayName);
+  localStorage.setItem(USERNAME_STORAGE, credentials.username);
   state.isAuthBusy = true;
-  state.authNotice = "正在进入...";
+  state.authNotice = "正在注册...";
   renderAuthStatus();
-  const { data, error } = await state.supabase.auth.signInAnonymously({
-    data: { display_name: displayName },
+  const { data, error } = await state.supabase.auth.signUp({
+    email: usernameToInternalEmail(credentials.username),
+    password: credentials.password,
+    data: { display_name: credentials.username, username: credentials.username },
   });
   state.isAuthBusy = false;
   if (error) {
     state.authNotice = error.message;
   } else {
     state.authSession = data.session;
-    state.authNotice = `已用昵称进入：${displayName}`;
+    state.authNotice = data.session
+      ? `注册成功：${credentials.username}`
+      : "注册成功，但 Supabase 仍要求确认账号。请在 Auth 设置里关闭邮箱确认。";
+  }
+  await loadPredictions();
+}
+
+async function loginWithUsername() {
+  if (!state.supabase) await connectSupabase();
+  if (!state.supabase) return;
+  const credentials = readUsernamePassword();
+  if (!credentials) {
+    render();
+    return;
+  }
+  localStorage.setItem(USERNAME_STORAGE, credentials.username);
+  state.isAuthBusy = true;
+  state.authNotice = "正在登录...";
+  renderAuthStatus();
+  const { data, error } = await state.supabase.auth.signInWithPassword({
+    email: usernameToInternalEmail(credentials.username),
+    password: credentials.password,
+  });
+  state.isAuthBusy = false;
+  if (error) {
+    state.authNotice = error.message;
+  } else {
+    state.authSession = data.session;
+    state.authNotice = `登录成功：${getCurrentDisplayName()}`;
   }
   await loadPredictions();
 }
@@ -872,6 +901,33 @@ function buildPredictionPayload(match, formData) {
 
   state.authNotice = "请选择预测类型。";
   return null;
+}
+
+function readUsernamePassword() {
+  const username = cleanText(els.usernameInput.value);
+  const password = String(els.passwordInput.value || "");
+  if (!/^[\p{L}\p{N}_-]{2,24}$/u.test(username)) {
+    state.authNotice = "用户名需为 2-24 位，可包含中文、英文、数字、下划线或短横线。";
+    return null;
+  }
+  if (password.length < 6) {
+    state.authNotice = "密码至少需要 6 位。";
+    return null;
+  }
+  return { username, password };
+}
+
+function usernameToInternalEmail(username) {
+  return `u_${hashString(username.toLocaleLowerCase())}@users.worldcup-lookup.app`;
+}
+
+function hashString(value) {
+  let hash = 2166136261;
+  for (const char of value) {
+    hash ^= char.codePointAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
 }
 
 async function loadPredictions() {
@@ -975,19 +1031,6 @@ function createSupabaseRestClient(projectUrl, apiKey) {
           const payload = await request("/auth/v1/signup", {
             method: "POST",
             body: JSON.stringify({ email, password }),
-          });
-          const session = normalizeSupabaseSession(payload);
-          if (session) saveSession(session, "SIGNED_IN");
-          return { data: { session, user: payload.user || session?.user || null }, error: null };
-        } catch (error) {
-          return { data: { session: null, user: null }, error };
-        }
-      },
-      async signInAnonymously({ data } = {}) {
-        try {
-          const payload = await request("/auth/v1/signup", {
-            method: "POST",
-            body: JSON.stringify({ data: data || {} }),
           });
           const session = normalizeSupabaseSession(payload);
           if (session) saveSession(session, "SIGNED_IN");
@@ -2211,7 +2254,7 @@ function getSupabaseConfig() {
 }
 
 function getCurrentDisplayName() {
-  return getSessionDisplayName(state.authSession) || localStorage.getItem(DISPLAY_NAME_STORAGE) || "匿名用户";
+  return getSessionDisplayName(state.authSession) || localStorage.getItem(USERNAME_STORAGE) || "用户";
 }
 
 function getSessionDisplayName(session) {

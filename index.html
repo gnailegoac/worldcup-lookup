@@ -79,11 +79,10 @@
           <strong id="authStatus">未连接 Supabase</strong>
         </div>
         <div class="account-controls">
-          <input id="supabaseUrlInput" type="url" placeholder="Supabase URL" autocomplete="off" />
-          <input id="supabaseAnonKeyInput" type="password" placeholder="Supabase anon key" autocomplete="off" />
-          <button class="action-button" id="connectSupabaseButton" type="button">连接</button>
-          <input id="displayNameInput" type="text" placeholder="自定义昵称" autocomplete="nickname" />
-          <button class="action-button primary" id="anonymousSignInButton" type="button">用昵称进入</button>
+          <input id="usernameInput" type="text" placeholder="用户名" autocomplete="username" />
+          <input id="passwordInput" type="password" placeholder="密码" autocomplete="current-password" />
+          <button class="action-button primary" id="loginButton" type="button">登录</button>
+          <button class="action-button" id="registerButton" type="button">注册</button>
           <button class="action-button" id="signOutButton" type="button">退出</button>
         </div>
       </section>
@@ -131,7 +130,7 @@
       </section>
     </main>
 
-    <script src="supabase-config.js?v=20260622-anon"></script>
-    <script src="app.js?v=20260622-anon" defer></script>
+    <script src="supabase-config.js?v=20260622-userpass"></script>
+    <script src="app.js?v=20260622-userpass" defer></script>
   </body>
 </html>

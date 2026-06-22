@@ -19,12 +19,12 @@
 
 ## 用户预测后端
 
-昵称进入、我的历史预测、公开预测需要 Supabase。
+用户名密码注册/登录、我的历史预测、公开预测需要 Supabase。
 
 1. 创建 Supabase 项目。
 2. 在 Supabase SQL Editor 运行 `supabase/schema.sql`。
-3. 在 `supabase-config.js` 填入项目的 URL 和 anon key，然后重新发布；也可以在页面顶部账号区域手动输入 URL 和 anon key 后点击“连接”。
-4. Supabase Auth 里启用 Anonymous Sign-ins。
+3. 在 `supabase-config.js` 填入项目的 URL 和 anon key，然后重新发布。
+4. Supabase Auth 里启用 Email provider，并关闭 Confirm email。
 
 权限设计：
 
@@ -32,7 +32,7 @@
 - 用户可以读取自己的全部预测。
 - 所有人可以读取 `is_public = true` 的公开预测。
 - 每个用户对每场比赛只有一条预测；重复提交会更新原记录。
-- 匿名账号只保存在当前浏览器里；用户退出、清除浏览器数据或换设备后，无法找回同一个匿名账号。
+- 用户界面只显示用户名和密码。前端会把用户名映射成内部邮箱交给 Supabase Auth，用户不需要输入真实邮箱。
 
 ## 实时数据
 
