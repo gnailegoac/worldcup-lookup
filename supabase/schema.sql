@@ -8,6 +8,7 @@ create table if not exists public.predictions (
   match_label text not null,
   home_team text not null,
   away_team text not null,
+  display_name text,
   prediction_type text not null check (prediction_type in ('outcome', 'score')),
   outcome text check (outcome in ('home', 'draw', 'away')),
   home_score integer check (home_score >= 0),
@@ -22,6 +23,9 @@ create table if not exists public.predictions (
   ),
   constraint predictions_one_per_user_match unique (user_id, match_id)
 );
+
+alter table public.predictions
+  add column if not exists display_name text;
 
 create index if not exists predictions_user_created_idx
   on public.predictions (user_id, created_at desc);
