@@ -332,6 +332,7 @@ const state = {
   authSession: null,
   authStatus: "未连接 Supabase",
   authNotice: "",
+  predictionNotice: "",
   myPredictions: [],
   publicPredictions: [],
   isLoadingPredictions: false,
@@ -426,6 +427,7 @@ function bindEvents() {
     const card = event.target.closest("[data-match-id]");
     if (!card) return;
     state.selectedId = card.dataset.matchId;
+    state.predictionNotice = "";
     render();
   });
 
@@ -512,6 +514,11 @@ function renderAuthStatus() {
   const user = state.authSession?.user;
   const name = getCurrentDisplayName();
   els.authStatus.textContent = state.authNotice || (user ? `已进入：${name}` : state.authStatus);
+  els.usernameInput.hidden = Boolean(user);
+  els.passwordInput.hidden = Boolean(user);
+  els.loginButton.hidden = Boolean(user);
+  els.registerButton.hidden = Boolean(user);
+  els.signOutButton.hidden = !user;
   els.signOutButton.disabled = !user || state.isAuthBusy;
   els.loginButton.disabled = Boolean(user) || state.isAuthBusy || !state.supabase;
   els.registerButton.disabled = Boolean(user) || state.isAuthBusy || !state.supabase;
@@ -835,12 +842,12 @@ async function signOut() {
 
 async function submitPrediction(match) {
   if (!state.supabase || !state.authSession?.user) {
-    state.authNotice = "请先连接 Supabase 并登录。";
+    state.predictionNotice = "请先登录后再提交预测。";
     render();
     return;
   }
   if (!isMatchPredictable(match)) {
-    state.authNotice = "只能预测未开赛的比赛。";
+    state.predictionNotice = "只能预测未开赛的比赛。";
     render();
     return;
   }
@@ -853,15 +860,17 @@ async function submitPrediction(match) {
     return;
   }
 
+  state.predictionNotice = "正在保存预测...";
+  renderDetail(match);
   const { error } = await state.supabase
     .from("predictions")
     .upsert(payload, { onConflict: "user_id,match_id" });
   if (error) {
-    state.authNotice = `预测提交失败：${error.message}`;
+    state.predictionNotice = `预测提交失败：${error.message}`;
     render();
     return;
   }
-  state.authNotice = "预测已保存。";
+  state.predictionNotice = "预测已保存。";
   await loadPredictions();
 }
 
@@ -883,7 +892,7 @@ function buildPredictionPayload(match, formData) {
   if (predictionType === "outcome") {
     const outcome = cleanText(formData.get("outcome"));
     if (!["home", "draw", "away"].includes(outcome)) {
-      state.authNotice = "请选择有效的胜平负预测。";
+      state.predictionNotice = "请选择有效的胜平负预测。";
       return null;
     }
     return { ...base, outcome, home_score: null, away_score: null };
@@ -893,13 +902,13 @@ function buildPredictionPayload(match, formData) {
     const homeScore = Number(formData.get("predictedHomeScore"));
     const awayScore = Number(formData.get("predictedAwayScore"));
     if (!Number.isInteger(homeScore) || !Number.isInteger(awayScore) || homeScore < 0 || awayScore < 0) {
-      state.authNotice = "请输入有效的比分预测。";
+      state.predictionNotice = "请输入有效的比分预测。";
       return null;
     }
     return { ...base, outcome: null, home_score: homeScore, away_score: awayScore };
   }
 
-  state.authNotice = "请选择预测类型。";
+  state.predictionNotice = "请选择预测类型。";
   return null;
 }
 
@@ -1585,6 +1594,7 @@ function renderPredictionForm(match) {
         <h2 class="section-title">提交预测</h2>
         <span>${escapeHtml(status)}</span>
       </div>
+      ${state.predictionNotice ? `<div class="prediction-notice">${escapeHtml(state.predictionNotice)}</div>` : ""}
       <div class="prediction-controls">
         <label>
           类型

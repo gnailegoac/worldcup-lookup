@@ -226,6 +226,10 @@ h1 {
   min-width: 0;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 .account-controls input {
   width: 100%;
   min-height: 36px;
@@ -686,6 +690,15 @@ h1 {
   color: var(--muted);
   font-size: 0.78rem;
   font-weight: 800;
+}
+
+.prediction-notice {
+  border-left: 3px solid var(--accent);
+  padding: 8px 10px;
+  background: #e9f7f4;
+  color: #0f4f49;
+  font-size: 0.82rem;
+  font-weight: 850;
 }
 
 .prediction-controls {
