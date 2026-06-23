@@ -16,7 +16,7 @@ const MAX_WDL_GOALS = 12;
 const SHOW_ADMIN_TOOLS = false;
 const AUTO_SCHEDULE_SYNC_MAX_AGE_MS = 15 * 60 * 1000;
 const MIN_LIVE_SCHEDULE_MATCHES = 60;
-const LIVE_SCHEDULE_FORMAT_VERSION = "official-schedule-20260623";
+const LIVE_SCHEDULE_FORMAT_VERSION = "official-schedule-fallback-20260623";
 const BEIJING_TIME_ZONE = "Asia/Shanghai";
 const BEIJING_OFFSET_MINUTES = 8 * 60;
 const WORLDCUP26_STADIUMS = {
@@ -427,6 +427,36 @@ const seedMatches = [
   },
 ];
 const SEED_MATCH_IDS = new Set(seedMatches.map((match) => match.id));
+const OFFICIAL_UPCOMING_SNAPSHOT = [
+  { id: "45", local_date: "06/23/2026 12:00", stadium_id: "5", home_team_name_en: "Portugal", away_team_name_en: "Uzbekistan", group: "K", finished: "FALSE", type: "group" },
+  { id: "46", local_date: "06/23/2026 19:00", stadium_id: "12", home_team_name_en: "Panama", away_team_name_en: "Croatia", group: "L", finished: "FALSE", type: "group" },
+  { id: "47", local_date: "06/23/2026 20:00", stadium_id: "2", home_team_name_en: "Colombia", away_team_name_en: "Democratic Republic of the Congo", group: "K", finished: "FALSE", type: "group" },
+  { id: "48", local_date: "06/23/2026 16:00", stadium_id: "9", home_team_name_en: "England", away_team_name_en: "Ghana", group: "L", finished: "FALSE", type: "group" },
+  { id: "49", local_date: "06/24/2026 18:00", stadium_id: "8", home_team_name_en: "Scotland", away_team_name_en: "Brazil", group: "C", finished: "FALSE", type: "group" },
+  { id: "50", local_date: "06/24/2026 18:00", stadium_id: "7", home_team_name_en: "Morocco", away_team_name_en: "Haiti", group: "C", finished: "FALSE", type: "group" },
+  { id: "51", local_date: "06/24/2026 19:00", stadium_id: "3", home_team_name_en: "South Africa", away_team_name_en: "South Korea", group: "A", finished: "FALSE", type: "group" },
+  { id: "52", local_date: "06/24/2026 19:00", stadium_id: "1", home_team_name_en: "Czech Republic", away_team_name_en: "Mexico", group: "A", finished: "FALSE", type: "group" },
+  { id: "53", local_date: "06/24/2026 12:00", stadium_id: "14", home_team_name_en: "Bosnia and Herzegovina", away_team_name_en: "Qatar", group: "B", finished: "FALSE", type: "group" },
+  { id: "54", local_date: "06/24/2026 12:00", stadium_id: "13", home_team_name_en: "Switzerland", away_team_name_en: "Canada", group: "B", finished: "FALSE", type: "group" },
+  { id: "55", local_date: "06/25/2026 16:00", stadium_id: "10", home_team_name_en: "Curaçao", away_team_name_en: "Ivory Coast", group: "E", finished: "FALSE", type: "group" },
+  { id: "56", local_date: "06/25/2026 16:00", stadium_id: "11", home_team_name_en: "Ecuador", away_team_name_en: "Germany", group: "E", finished: "FALSE", type: "group" },
+  { id: "57", local_date: "06/25/2026 19:00", stadium_id: "15", home_team_name_en: "Paraguay", away_team_name_en: "Australia", group: "D", finished: "FALSE", type: "group" },
+  { id: "58", local_date: "06/25/2026 19:00", stadium_id: "16", home_team_name_en: "Turkey", away_team_name_en: "United States", group: "D", finished: "FALSE", type: "group" },
+  { id: "59", local_date: "06/25/2026 18:00", stadium_id: "4", home_team_name_en: "Japan", away_team_name_en: "Sweden", group: "F", finished: "FALSE", type: "group" },
+  { id: "60", local_date: "06/25/2026 18:00", stadium_id: "6", home_team_name_en: "Tunisia", away_team_name_en: "Netherlands", group: "F", finished: "FALSE", type: "group" },
+  { id: "61", local_date: "06/26/2026 15:00", stadium_id: "12", home_team_name_en: "Senegal", away_team_name_en: "Iraq", group: "I", finished: "FALSE", type: "group" },
+  { id: "62", local_date: "06/26/2026 15:00", stadium_id: "9", home_team_name_en: "Norway", away_team_name_en: "France", group: "I", finished: "FALSE", type: "group" },
+  { id: "63", local_date: "06/26/2026 20:00", stadium_id: "14", home_team_name_en: "Egypt", away_team_name_en: "Iran", group: "G", finished: "FALSE", type: "group" },
+  { id: "64", local_date: "06/26/2026 20:00", stadium_id: "13", home_team_name_en: "New Zealand", away_team_name_en: "Belgium", group: "G", finished: "FALSE", type: "group" },
+  { id: "65", local_date: "06/26/2026 19:00", stadium_id: "5", home_team_name_en: "Cape Verde", away_team_name_en: "Saudi Arabia", group: "H", finished: "FALSE", type: "group" },
+  { id: "66", local_date: "06/26/2026 18:00", stadium_id: "2", home_team_name_en: "Uruguay", away_team_name_en: "Spain", group: "H", finished: "FALSE", type: "group" },
+  { id: "67", local_date: "06/27/2026 17:00", stadium_id: "11", home_team_name_en: "Panama", away_team_name_en: "England", group: "L", finished: "FALSE", type: "group" },
+  { id: "68", local_date: "06/27/2026 17:00", stadium_id: "10", home_team_name_en: "Croatia", away_team_name_en: "Ghana", group: "L", finished: "FALSE", type: "group" },
+  { id: "69", local_date: "06/27/2026 21:00", stadium_id: "6", home_team_name_en: "Algeria", away_team_name_en: "Austria", group: "J", finished: "FALSE", type: "group" },
+  { id: "70", local_date: "06/27/2026 21:00", stadium_id: "4", home_team_name_en: "Jordan", away_team_name_en: "Argentina", group: "J", finished: "FALSE", type: "group" },
+  { id: "71", local_date: "06/27/2026 19:30", stadium_id: "8", home_team_name_en: "Colombia", away_team_name_en: "Portugal", group: "K", finished: "FALSE", type: "group" },
+  { id: "72", local_date: "06/27/2026 19:30", stadium_id: "7", home_team_name_en: "Democratic Republic of the Congo", away_team_name_en: "Uzbekistan", group: "K", finished: "FALSE", type: "group" },
+];
 
 const state = {
   matches: loadMatches(),
@@ -511,6 +541,7 @@ function init() {
   }
   const supabaseConfig = getSupabaseConfig();
   els.usernameInput.value = localStorage.getItem(USERNAME_STORAGE) || "";
+  applyOfficialScheduleSnapshotIfNeeded();
   renderGroupOptions();
   bindEvents();
   render();
@@ -843,6 +874,25 @@ async function maybeAutoSyncSchedule() {
   const hasCurrentFormat = state.liveMeta.scheduleFormatVersion === LIVE_SCHEDULE_FORMAT_VERSION;
   if (hasRecentSync && hasLikelyFullSchedule && hasLiveFinishedMatches && hasCurrentFormat) return;
   await syncWorldCupSchedule({ silent: true, preserveView: true });
+}
+
+function applyOfficialScheduleSnapshotIfNeeded() {
+  const hasCurrentFormat = state.liveMeta.scheduleFormatVersion === LIVE_SCHEDULE_FORMAT_VERSION;
+  const hasOfficialSchedule = state.matches.some((match) => String(match.id || "").startsWith("worldcup26-"));
+  const hasOldSeedSchedule = state.matches.some((match) => SEED_MATCH_IDS.has(String(match.id || "")));
+  if (hasCurrentFormat && hasOfficialSchedule && !hasOldSeedSchedule) return;
+
+  const snapshotMatches = normalizeWorldCup26Payload(OFFICIAL_UPCOMING_SNAPSHOT);
+  if (!snapshotMatches.length) return;
+  replaceScheduleMatches(snapshotMatches, { preserveModel: true });
+  state.liveMeta = {
+    ...state.liveMeta,
+    scheduleFormatVersion: LIVE_SCHEDULE_FORMAT_VERSION,
+    scheduleSource: "bundled WorldCup26 upcoming snapshot",
+    lastScheduleCount: snapshotMatches.length,
+  };
+  persistLiveMeta();
+  persistMatches();
 }
 
 async function syncOdds() {
