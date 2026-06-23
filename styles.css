@@ -310,11 +310,11 @@ h1 {
 
 .match-list {
   display: grid;
+  align-content: start;
   gap: 10px;
-  max-height: calc(100vh - 310px);
-  min-height: 420px;
-  overflow: auto;
-  padding-right: 2px;
+  min-height: 0;
+  overflow: visible;
+  padding-right: 0;
 }
 
 .match-card {

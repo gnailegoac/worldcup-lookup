@@ -14,6 +14,8 @@ const DEMO_REFERENCE_AT = "2026-06-22T16:00:00Z";
 const MAX_EXACT_GOALS = 6;
 const MAX_WDL_GOALS = 12;
 const SHOW_ADMIN_TOOLS = false;
+const AUTO_SCHEDULE_SYNC_MAX_AGE_MS = 15 * 60 * 1000;
+const MIN_LIVE_SCHEDULE_MATCHES = 60;
 const WORLDCUP26_STADIUMS = {
   1: { name: "Mexico City Stadium", city: "Mexico City", offsetMinutes: -360 },
   2: { name: "Estadio Guadalajara", city: "Guadalajara", offsetMinutes: -360 },
@@ -391,6 +393,7 @@ init();
 
 function init() {
   els.referenceInput.value = toDatetimeLocal(state.referenceAt);
+  els.limitSelect.value = state.limit;
   if (SHOW_ADMIN_TOOLS && els.oddsApiKeyInput && els.oddsSportKeyInput && els.oddsRegionSelect) {
     els.oddsApiKeyInput.value = localStorage.getItem(ODDS_API_KEY_STORAGE) || "";
     els.oddsSportKeyInput.value = localStorage.getItem(ODDS_SPORT_KEY_STORAGE) || "soccer_fifa_world_cup";
@@ -404,6 +407,7 @@ function init() {
   if (supabaseConfig.url && supabaseConfig.anonKey) {
     connectSupabase();
   }
+  maybeAutoSyncSchedule();
 }
 
 function bindEvents() {
@@ -673,11 +677,13 @@ function deleteSelectedMatch(match) {
   render();
 }
 
-async function syncWorldCupSchedule() {
+async function syncWorldCupSchedule(options = {}) {
+  const silent = options?.silent === true;
+  const preserveView = options?.preserveView === true;
   state.isSyncingSchedule = true;
-  state.notice = "";
+  if (!silent) state.notice = "";
   state.liveMeta.lastError = "";
-  renderLiveStatus();
+  if (!silent) renderLiveStatus();
 
   try {
     const payload = await fetchJson(WORLDCUP26_GAMES_URL);
@@ -693,20 +699,30 @@ async function syncWorldCupSchedule() {
       lastError: "",
       lastScheduleCount: liveMatches.length,
     };
-    state.notice = `赛程/比分同步完成：新增 ${summary.added} 场，更新 ${summary.updated} 场。`;
-    state.view = "all";
+    if (!silent) state.notice = `赛程/比分同步完成：新增 ${summary.added} 场，更新 ${summary.updated} 场。`;
+    if (!preserveView) state.view = "all";
     persistLiveMeta();
     persistMatches();
     renderGroupOptions();
   } catch (error) {
     const message = getErrorMessage(error);
     state.liveMeta = { ...state.liveMeta, lastError: `赛程同步失败：${message}` };
-    state.notice = `赛程同步失败：${message}`;
+    if (!silent) state.notice = `赛程同步失败：${message}`;
     persistLiveMeta();
   } finally {
     state.isSyncingSchedule = false;
     render();
   }
+}
+
+async function maybeAutoSyncSchedule() {
+  if (state.isSyncingSchedule) return;
+  const lastSync = new Date(state.liveMeta.scheduleSyncedAt || 0).getTime();
+  const hasRecentSync = Number.isFinite(lastSync) && Date.now() - lastSync <= AUTO_SCHEDULE_SYNC_MAX_AGE_MS;
+  const hasLikelyFullSchedule = state.matches.length >= MIN_LIVE_SCHEDULE_MATCHES;
+  const hasLiveFinishedMatches = state.matches.some(isFinishedMatch);
+  if (hasRecentSync && hasLikelyFullSchedule && hasLiveFinishedMatches) return;
+  await syncWorldCupSchedule({ silent: true, preserveView: true });
 }
 
 async function syncOdds() {
@@ -1749,8 +1765,9 @@ function renderGroupOptions() {
 
 function renderSummary() {
   const searchable = getSearchFilteredMatches();
-  const upcoming = searchable.filter((match) => new Date(match.kickoffUtc) >= state.referenceAt);
-  const history = searchable.filter((match) => new Date(match.kickoffUtc) < state.referenceAt);
+  const ref = state.referenceAt.getTime();
+  const upcoming = searchable.filter((match) => isUpcomingMatch(match, ref));
+  const history = searchable.filter((match) => isHistoryMatch(match, ref));
   els.upcomingCount.textContent = upcoming.length;
   els.historyCount.textContent = history.length;
 
@@ -2257,7 +2274,7 @@ function getFinalResultForLeaderboard(match) {
 }
 
 function isPredictionCorrect(prediction, result) {
-  if (prediction.prediction_type === "score") {
+  if (isScorePrediction(prediction)) {
     return Number(prediction.home_score) === result.home && Number(prediction.away_score) === result.away;
   }
   return prediction.outcome === getOutcomeFromResult(result);
@@ -2306,12 +2323,22 @@ function renderPredictionCard(prediction, showOwner) {
 }
 
 function formatPrediction(prediction) {
-  if (prediction.prediction_type === "score") {
-    return `比分 ${prediction.home_score}-${prediction.away_score}`;
+  if (isScorePrediction(prediction)) {
+    const homeScore = Number(prediction.home_score);
+    const awayScore = Number(prediction.away_score);
+    if (Number.isFinite(homeScore) && Number.isFinite(awayScore)) {
+      return `比分 ${homeScore}-${awayScore}`;
+    }
   }
   if (prediction.outcome === "home") return `${prediction.home_team} 胜`;
   if (prediction.outcome === "away") return `${prediction.away_team} 胜`;
   return "平局";
+}
+
+function isScorePrediction(prediction) {
+  const type = cleanText(prediction.prediction_type).toLocaleLowerCase();
+  if (type === "score") return true;
+  return Number.isFinite(Number(prediction.home_score)) && Number.isFinite(Number(prediction.away_score));
 }
 
 function formatPredictionMeta(prediction) {
@@ -2344,18 +2371,44 @@ function getVisibleMatches() {
   const ref = state.referenceAt.getTime();
 
   if (state.view === "upcoming") {
-    matches = matches.filter((match) => new Date(match.kickoffUtc).getTime() >= ref).sort(sortAscending);
+    matches = matches.filter((match) => isUpcomingMatch(match, ref)).sort(sortAscending);
   } else if (state.view === "history") {
-    matches = matches.filter((match) => new Date(match.kickoffUtc).getTime() < ref).sort(sortDescending);
+    matches = matches.filter((match) => isHistoryMatch(match, ref)).sort(sortDescending);
   } else {
     matches = matches.sort(sortAscending);
   }
 
-  if (state.limit !== "all" && state.view !== "all") {
-    matches = matches.slice(0, Number(state.limit));
+  const limit = getVisibleLimit();
+  if (Number.isFinite(limit) && state.view !== "all") {
+    matches = matches.slice(0, limit);
   }
 
   return matches;
+}
+
+function getVisibleLimit() {
+  if (state.limit === "all") return Infinity;
+  const limit = Number(state.limit);
+  return Number.isFinite(limit) && limit > 0 ? Math.trunc(limit) : 5;
+}
+
+function getKickoffTime(match) {
+  const time = new Date(match.kickoffUtc).getTime();
+  return Number.isFinite(time) ? time : Number.NaN;
+}
+
+function isFinishedMatch(match) {
+  return match.liveStatus === "FINISHED" && hasResult(match);
+}
+
+function isUpcomingMatch(match, referenceMs = state.referenceAt.getTime()) {
+  if (isFinishedMatch(match)) return false;
+  return getKickoffTime(match) >= referenceMs;
+}
+
+function isHistoryMatch(match, referenceMs = state.referenceAt.getTime()) {
+  if (isFinishedMatch(match)) return true;
+  return getKickoffTime(match) < referenceMs;
 }
 
 function getSearchFilteredMatches() {
