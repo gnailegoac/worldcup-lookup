@@ -703,9 +703,10 @@ h1 {
 
 .prediction-controls {
   display: grid;
-  grid-template-columns: minmax(110px, 0.7fr) minmax(130px, 0.8fr) 86px 86px auto auto;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 128px), 1fr));
   gap: 8px;
   align-items: end;
+  min-width: 0;
 }
 
 .prediction-controls label {
@@ -714,24 +715,42 @@ h1 {
   color: var(--muted);
   font-size: 0.76rem;
   font-weight: 800;
+  min-width: 0;
 }
 
 .prediction-controls input,
 .prediction-controls select {
+  width: 100%;
+  min-width: 0;
   min-height: 36px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   padding: 0 8px;
+  box-sizing: border-box;
 }
 
-.public-toggle {
+.prediction-form[data-prediction-type="outcome"] [data-score-prediction-field],
+.prediction-form[data-prediction-type="score"] [data-outcome-prediction-field] {
+  display: none;
+}
+
+.prediction-controls .public-toggle {
   align-items: center;
-  grid-template-columns: auto auto;
+  display: flex;
+  gap: 6px;
+  justify-content: flex-start;
   min-height: 36px;
 }
 
-.public-toggle input {
+.prediction-controls .public-toggle input {
+  width: auto;
   min-height: auto;
+}
+
+.prediction-submit {
+  min-width: 96px;
+  width: fit-content;
+  max-width: 100%;
 }
 
 .predictions-area {

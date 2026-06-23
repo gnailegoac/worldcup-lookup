@@ -445,6 +445,13 @@ function bindEvents() {
     renderDetail(getSelectedMatch());
   });
 
+  els.matchDetail.addEventListener("change", (event) => {
+    if (!event.target.matches("[name='predictionType']")) return;
+    const form = event.target.closest("[data-prediction-form]");
+    if (!form) return;
+    form.dataset.predictionType = event.target.value;
+  });
+
   els.matchDetail.addEventListener("click", handleDetailAction);
   if (SHOW_ADMIN_TOOLS) {
     els.syncScheduleButton.addEventListener("click", syncWorldCupSchedule);
@@ -1529,13 +1536,11 @@ function renderDetail(match) {
         <div class="detail-team">
           <span class="team-code">${escapeHtml(match.homeCode || "A")}</span>
           <span class="team-name">${escapeHtml(match.home)}</span>
-          <span class="expected">xG ${formatNumber(match.lambdaHome)}</span>
         </div>
         <span class="versus">VS</span>
         <div class="detail-team right">
           <span class="team-code">${escapeHtml(match.awayCode || "B")}</span>
           <span class="team-name">${escapeHtml(match.away)}</span>
-          <span class="expected">xG ${formatNumber(match.lambdaAway)}</span>
         </div>
       </div>
       <div class="result-line">
@@ -1574,22 +1579,12 @@ function renderDetail(match) {
 
         ${renderPredictionForm(match)}
 
-        <div class="model-table">
-          <div><span>概率快照</span><strong>${escapeHtml(formatDateFull(match.generatedAt || match.kickoffUtc))}</strong></div>
-          <div><span>模型</span><strong>Poisson xG v1</strong></div>
-          <div><span>数据标签</span><strong>${escapeHtml(match.source || "本地数据")}</strong></div>
-        </div>
-
         ${SHOW_ADMIN_TOOLS ? renderEditor(match) : ""}
       </section>
 
       <section class="score-grid-wrap">
         <h2 class="section-title">具体比分矩阵</h2>
         ${renderScoreGrid(probability)}
-        <div class="source-row">
-          <span>0-${MAX_EXACT_GOALS} 球区间合计 ${formatPercent(probability.gridMass)}</span>
-          <span class="source-badge">其他比分 ${formatPercent(probability.otherScore)}</span>
-        </div>
       </section>
     </div>
   `;
@@ -1666,7 +1661,7 @@ function renderPredictionForm(match) {
         : "可提交或更新预测";
 
   return `
-    <form class="prediction-form" data-prediction-form>
+    <form class="prediction-form" data-prediction-form data-prediction-type="outcome">
       <div class="prediction-form-head">
         <h2 class="section-title">提交预测</h2>
         <span>${escapeHtml(status)}</span>
@@ -1680,7 +1675,7 @@ function renderPredictionForm(match) {
             <option value="score">具体比分</option>
           </select>
         </label>
-        <label>
+        <label data-outcome-prediction-field>
           胜平负
           <select name="outcome" ${disabledAttr}>
             <option value="home">${escapeHtml(match.homeCode || "A")} 胜</option>
@@ -1688,11 +1683,11 @@ function renderPredictionForm(match) {
             <option value="away">${escapeHtml(match.awayCode || "B")} 胜</option>
           </select>
         </label>
-        <label>
+        <label data-score-prediction-field>
           A队进球
           <input name="predictedHomeScore" type="number" min="0" max="20" step="1" value="1" ${disabledAttr} />
         </label>
-        <label>
+        <label data-score-prediction-field>
           B队进球
           <input name="predictedAwayScore" type="number" min="0" max="20" step="1" value="1" ${disabledAttr} />
         </label>
@@ -1700,7 +1695,7 @@ function renderPredictionForm(match) {
           <input name="isPublic" type="checkbox" ${disabledAttr} />
           公开
         </label>
-        <button type="button" class="action-button primary" data-action="submit-prediction" ${disabledAttr}>提交</button>
+        <button type="button" class="action-button primary prediction-submit" data-action="submit-prediction" ${disabledAttr}>提交</button>
       </div>
     </form>
   `;
