@@ -61,6 +61,7 @@ drop policy if exists "Users can read own predictions and public predictions" on
 create policy "Users can read own predictions and public predictions"
   on public.predictions
   for select
+  to authenticated
   using (is_public = true or auth.uid() = user_id);
 
 drop policy if exists "Users can insert own predictions" on public.predictions;

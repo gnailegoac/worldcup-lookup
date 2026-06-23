@@ -1074,19 +1074,22 @@ async function loadPredictions() {
   }
   state.isLoadingPredictions = true;
   renderAuthStatus();
+  const user = state.authSession?.user;
 
-  const publicQuery = state.supabase
-    .from("predictions")
-    .select("*")
-    .eq("is_public", true)
-    .order("created_at", { ascending: false })
-    .limit(500);
-
-  const myQuery = state.authSession?.user
+  const publicQuery = user
     ? state.supabase
         .from("predictions")
         .select("*")
-        .eq("user_id", state.authSession.user.id)
+        .eq("is_public", true)
+        .order("created_at", { ascending: false })
+        .limit(500)
+    : Promise.resolve({ data: [], error: null });
+
+  const myQuery = user
+    ? state.supabase
+        .from("predictions")
+        .select("*")
+        .eq("user_id", user.id)
         .order("created_at", { ascending: false })
         .limit(500)
     : Promise.resolve({ data: [], error: null });
@@ -1965,10 +1968,16 @@ function renderPredictionLists() {
     showOwner: false,
   });
   els.publicPredictionsList.innerHTML = renderPredictionList({
-    predictions: state.publicPredictions,
-    emptyText: state.supabase ? "暂无公开预测" : "连接 Supabase 后查看公开预测",
+    predictions: state.authSession?.user ? state.publicPredictions : [],
+    emptyText: getPublicPredictionsEmptyText(),
     showOwner: true,
   });
+}
+
+function getPublicPredictionsEmptyText() {
+  if (!state.supabase) return "连接 Supabase 后查看公开预测";
+  if (!state.authSession?.user) return "登录后查看公开预测";
+  return "暂无公开预测";
 }
 
 function renderAdminPanel() {
@@ -2036,6 +2045,7 @@ function getSelectedAdminUser() {
 function renderLeaderboard() {
   if (state.isLoadingPredictions) return `<div class="empty-list compact-empty">正在加载排行榜...</div>`;
   if (!state.supabase) return `<div class="empty-list compact-empty">连接 Supabase 后查看排行榜</div>`;
+  if (!state.authSession?.user) return `<div class="empty-list compact-empty">登录后查看排行榜</div>`;
 
   const rows = buildLeaderboardRows();
   if (!rows.length) return `<div class="empty-list compact-empty">暂无已结算的公开预测</div>`;
