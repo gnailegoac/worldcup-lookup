@@ -16,7 +16,7 @@ const MAX_WDL_GOALS = 12;
 const SHOW_ADMIN_TOOLS = false;
 const AUTO_SCHEDULE_SYNC_MAX_AGE_MS = 15 * 60 * 1000;
 const MIN_LIVE_SCHEDULE_MATCHES = 60;
-const LIVE_SCHEDULE_FORMAT_VERSION = "beijing-zh-20260623";
+const LIVE_SCHEDULE_FORMAT_VERSION = "official-schedule-20260623";
 const BEIJING_TIME_ZONE = "Asia/Shanghai";
 const BEIJING_OFFSET_MINUTES = 8 * 60;
 const WORLDCUP26_STADIUMS = {
@@ -426,6 +426,7 @@ const seedMatches = [
     source: "示例赛前模型",
   },
 ];
+const SEED_MATCH_IDS = new Set(seedMatches.map((match) => match.id));
 
 const state = {
   matches: loadMatches(),
@@ -807,7 +808,7 @@ async function syncWorldCupSchedule(options = {}) {
     const liveMatches = normalizeWorldCup26Payload(payload);
     if (!liveMatches.length) throw new Error("接口没有返回可识别的比赛数据");
 
-    const summary = mergeMatches(liveMatches, { preserveModel: true });
+    const summary = replaceScheduleMatches(liveMatches, { preserveModel: true });
     const syncedAt = new Date().toISOString();
     state.liveMeta = {
       ...state.liveMeta,
@@ -1756,6 +1757,21 @@ function mergeMatches(incomingMatches, options = {}) {
 
   state.matches = nextMatches.sort(sortAscending);
   return { added, updated };
+}
+
+function replaceScheduleMatches(incomingMatches, options = {}) {
+  const before = state.matches.length;
+  state.matches = state.matches.filter((match) => !isManagedScheduleMatch(match));
+  const removed = before - state.matches.length;
+  const summary = mergeMatches(incomingMatches, options);
+  return { ...summary, removed };
+}
+
+function isManagedScheduleMatch(match) {
+  const id = String(match.id || "");
+  if (id.startsWith("worldcup26-")) return true;
+  if (SEED_MATCH_IDS.has(id)) return true;
+  return cleanText(match.source).toLocaleLowerCase().includes("worldcup26 live api");
 }
 
 function mergeMatch(existing, incoming, preserveModel) {
