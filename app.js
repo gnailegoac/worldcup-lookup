@@ -16,7 +16,7 @@ const MAX_WDL_GOALS = 12;
 const SHOW_ADMIN_TOOLS = false;
 const AUTO_SCHEDULE_SYNC_MAX_AGE_MS = 15 * 60 * 1000;
 const MIN_LIVE_SCHEDULE_MATCHES = 60;
-const LIVE_SCHEDULE_FORMAT_VERSION = "official-full-schedule-ratings-20260623";
+const LIVE_SCHEDULE_FORMAT_VERSION = "official-full-schedule-style-20260623";
 const BEIJING_TIME_ZONE = "Asia/Shanghai";
 const BEIJING_OFFSET_MINUTES = 8 * 60;
 const WORLDCUP26_STADIUMS = {
@@ -195,6 +195,59 @@ const TEAM_STRENGTH_RATINGS = {
   "New Zealand": 1450,
   Curaçao: 1420,
   Curacao: 1420,
+};
+const TEAM_GOAL_PROFILES = {
+  Argentina: { attack: 1.16, concede: 0.84, tempo: 0.98 },
+  France: { attack: 1.18, concede: 0.88, tempo: 1.02 },
+  Spain: { attack: 1.12, concede: 0.9, tempo: 0.96 },
+  England: { attack: 1.08, concede: 0.88, tempo: 0.92 },
+  Brazil: { attack: 1.15, concede: 0.9, tempo: 1.06 },
+  Portugal: { attack: 1.12, concede: 0.92, tempo: 1.02 },
+  Netherlands: { attack: 1.1, concede: 0.95, tempo: 1.04 },
+  Belgium: { attack: 1.08, concede: 0.96, tempo: 1.02 },
+  Germany: { attack: 1.1, concede: 1, tempo: 1.08 },
+  Uruguay: { attack: 1.06, concede: 0.9, tempo: 0.95 },
+  Colombia: { attack: 1.07, concede: 0.94, tempo: 1 },
+  Croatia: { attack: 1.02, concede: 0.88, tempo: 0.9 },
+  Morocco: { attack: 0.98, concede: 0.86, tempo: 0.88 },
+  "United States": { attack: 1.04, concede: 1, tempo: 1.08 },
+  "United States of America": { attack: 1.04, concede: 1, tempo: 1.08 },
+  Mexico: { attack: 1, concede: 0.94, tempo: 0.96 },
+  Japan: { attack: 1.07, concede: 0.96, tempo: 1.08 },
+  "Czech Republic": { attack: 0.98, concede: 0.92, tempo: 0.94 },
+  Switzerland: { attack: 1, concede: 0.9, tempo: 0.92 },
+  Austria: { attack: 1.03, concede: 0.95, tempo: 1.02 },
+  Senegal: { attack: 1, concede: 0.9, tempo: 0.94 },
+  Ecuador: { attack: 0.98, concede: 0.88, tempo: 0.92 },
+  Sweden: { attack: 0.98, concede: 0.9, tempo: 0.9 },
+  Turkey: { attack: 1.03, concede: 1.04, tempo: 1.08 },
+  Turkiye: { attack: 1.03, concede: 1.04, tempo: 1.08 },
+  Iran: { attack: 0.95, concede: 0.88, tempo: 0.86 },
+  "South Korea": { attack: 1.02, concede: 0.98, tempo: 1.04 },
+  Australia: { attack: 0.97, concede: 0.96, tempo: 0.96 },
+  "Ivory Coast": { attack: 1.02, concede: 0.98, tempo: 1.04 },
+  Norway: { attack: 1.05, concede: 1, tempo: 1.04 },
+  Paraguay: { attack: 0.94, concede: 0.9, tempo: 0.88 },
+  Ghana: { attack: 1, concede: 1.04, tempo: 1.08 },
+  Tunisia: { attack: 0.92, concede: 0.88, tempo: 0.84 },
+  Scotland: { attack: 0.96, concede: 0.96, tempo: 0.94 },
+  Algeria: { attack: 0.98, concede: 0.94, tempo: 0.96 },
+  Canada: { attack: 1.02, concede: 1.06, tempo: 1.1 },
+  "Bosnia and Herzegovina": { attack: 0.98, concede: 1.02, tempo: 1 },
+  "Saudi Arabia": { attack: 0.96, concede: 1.06, tempo: 1.06 },
+  Qatar: { attack: 0.94, concede: 1.08, tempo: 1.04 },
+  "South Africa": { attack: 0.94, concede: 1.02, tempo: 0.98 },
+  Egypt: { attack: 0.96, concede: 0.9, tempo: 0.88 },
+  Panama: { attack: 0.92, concede: 1.08, tempo: 1.04 },
+  "Democratic Republic of the Congo": { attack: 0.96, concede: 1.04, tempo: 1.06 },
+  Jordan: { attack: 0.9, concede: 1.06, tempo: 0.96 },
+  Iraq: { attack: 0.92, concede: 1.02, tempo: 0.94 },
+  Uzbekistan: { attack: 0.94, concede: 0.96, tempo: 0.92 },
+  Haiti: { attack: 0.88, concede: 1.12, tempo: 1.08 },
+  "Cape Verde": { attack: 0.9, concede: 1.02, tempo: 0.96 },
+  "New Zealand": { attack: 0.88, concede: 1.1, tempo: 1.02 },
+  "CuraÃ§ao": { attack: 0.86, concede: 1.14, tempo: 1.08 },
+  Curacao: { attack: 0.86, concede: 1.14, tempo: 1.08 },
 };
 
 const seedMatches = [
@@ -2905,10 +2958,17 @@ function scoreProbability(match, homeScore, awayScore) {
 function estimateLambdasFromTeamStrength(homeName, awayName) {
   const homeRating = getTeamStrengthRating(homeName);
   const awayRating = getTeamStrengthRating(awayName);
+  const homeProfile = getTeamGoalProfile(homeName);
+  const awayProfile = getTeamGoalProfile(awayName);
   const ratingDiff = clampNumber((homeRating - awayRating) / 450, -1.4, 1.4);
   const quality = clampNumber(((homeRating + awayRating) / 2 - 1650) / 500, -0.35, 0.35);
-  const totalGoals = clampNumber(2.45 + quality * 0.35, 1.85, 3.15);
-  const homeShare = clampNumber(0.5 + ratingDiff * 0.17, 0.28, 0.72);
+  const homeGoalPressure = homeProfile.attack * awayProfile.concede;
+  const awayGoalPressure = awayProfile.attack * homeProfile.concede;
+  const pressureFactor = clampNumber(Math.sqrt(homeGoalPressure * awayGoalPressure), 0.82, 1.18);
+  const tempoFactor = clampNumber(Math.sqrt(homeProfile.tempo * awayProfile.tempo), 0.82, 1.22);
+  const styleDiff = Math.log(homeGoalPressure / awayGoalPressure);
+  const totalGoals = clampNumber((2.45 + quality * 0.22) * pressureFactor * tempoFactor, 1.65, 3.35);
+  const homeShare = clampNumber(0.5 + ratingDiff * 0.13 + styleDiff * 0.18, 0.24, 0.76);
   return {
     lambdaHome: roundToTwo(totalGoals * homeShare),
     lambdaAway: roundToTwo(totalGoals * (1 - homeShare)),
@@ -2917,6 +2977,10 @@ function estimateLambdasFromTeamStrength(homeName, awayName) {
 
 function getTeamStrengthRating(name) {
   return TEAM_STRENGTH_RATINGS[cleanText(name)] || 1600;
+}
+
+function getTeamGoalProfile(name) {
+  return TEAM_GOAL_PROFILES[cleanText(name)] || { attack: 1, concede: 1, tempo: 1 };
 }
 
 function poissonDistribution(lambda, maxGoals) {
@@ -3014,7 +3078,7 @@ function normalizeWorldCup26Game(game) {
     lambdaAway: model.lambdaAway,
     result,
     generatedAt: new Date().toISOString(),
-    source: "WorldCup26 live API + team strength model",
+    source: "WorldCup26 live API + team strength/style model",
     liveStatus: normalizeWorldCup26Status(game),
     rawLocalDate: cleanText(game.local_date),
   };

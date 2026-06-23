@@ -11,6 +11,7 @@ const requiredBlocks = [
   matchRequired(/const MAX_EXACT_GOALS = \d+;/, "MAX_EXACT_GOALS"),
   matchRequired(/const MAX_WDL_GOALS = \d+;/, "MAX_WDL_GOALS"),
   matchRequired(/const TEAM_STRENGTH_RATINGS = \{[\s\S]*?\n\};/, "TEAM_STRENGTH_RATINGS"),
+  matchRequired(/const TEAM_GOAL_PROFILES = \{[\s\S]*?\n\};/, "TEAM_GOAL_PROFILES"),
 ];
 
 const probabilityStart = source.indexOf("function computeProbability(match)");
@@ -126,6 +127,15 @@ check("team strength model reacts to team order", () => {
   assert(brazilHome.lambdaHome > brazilHome.lambdaAway, "Brazil vs Haiti should favor Brazil");
   assert(haitiHome.lambdaAway > haitiHome.lambdaHome, "Haiti vs Brazil should favor Brazil as away team");
   assert(brazilHome.lambdaHome > haitiHome.lambdaHome, "stronger home side should receive higher lambda");
+});
+
+check("team style profile changes the goal environment", () => {
+  const conservativeMatch = estimateLambdasFromTeamStrength("Morocco", "Iran");
+  const openMatch = estimateLambdasFromTeamStrength("Canada", "Ghana");
+  const conservativeTotal = conservativeMatch.lambdaHome + conservativeMatch.lambdaAway;
+  const openTotal = openMatch.lambdaHome + openMatch.lambdaAway;
+  assert(openTotal > conservativeTotal, "open teams should produce a higher total-goals environment");
+  assert(conservativeTotal < 2.35, `conservative total should be suppressed, got ${conservativeTotal}`);
 });
 
 for (const checkItem of checks) {
