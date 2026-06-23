@@ -16,6 +16,9 @@ const MAX_WDL_GOALS = 12;
 const SHOW_ADMIN_TOOLS = false;
 const AUTO_SCHEDULE_SYNC_MAX_AGE_MS = 15 * 60 * 1000;
 const MIN_LIVE_SCHEDULE_MATCHES = 60;
+const LIVE_SCHEDULE_FORMAT_VERSION = "beijing-zh-20260623";
+const BEIJING_TIME_ZONE = "Asia/Shanghai";
+const BEIJING_OFFSET_MINUTES = 8 * 60;
 const WORLDCUP26_STADIUMS = {
   1: { name: "Mexico City Stadium", city: "Mexico City", offsetMinutes: -360 },
   2: { name: "Estadio Guadalajara", city: "Guadalajara", offsetMinutes: -360 },
@@ -33,6 +36,112 @@ const WORLDCUP26_STADIUMS = {
   14: { name: "Seattle Stadium", city: "Seattle", offsetMinutes: -420 },
   15: { name: "San Francisco Bay Area Stadium", city: "San Francisco Bay Area", offsetMinutes: -420 },
   16: { name: "Los Angeles Stadium", city: "Los Angeles", offsetMinutes: -420 },
+};
+const TEAM_NAME_ZH = {
+  Algeria: "阿尔及利亚",
+  Argentina: "阿根廷",
+  Australia: "澳大利亚",
+  Austria: "奥地利",
+  Belgium: "比利时",
+  "Bosnia and Herzegovina": "波黑",
+  Brazil: "巴西",
+  Canada: "加拿大",
+  "Cape Verde": "佛得角",
+  Colombia: "哥伦比亚",
+  Croatia: "克罗地亚",
+  Curaçao: "库拉索",
+  Curacao: "库拉索",
+  "Czech Republic": "捷克",
+  "Democratic Republic of the Congo": "刚果民主共和国",
+  Ecuador: "厄瓜多尔",
+  Egypt: "埃及",
+  England: "英格兰",
+  France: "法国",
+  Germany: "德国",
+  Ghana: "加纳",
+  Haiti: "海地",
+  Iran: "伊朗",
+  Iraq: "伊拉克",
+  "Ivory Coast": "科特迪瓦",
+  Japan: "日本",
+  Jordan: "约旦",
+  Mexico: "墨西哥",
+  Morocco: "摩洛哥",
+  Netherlands: "荷兰",
+  "New Zealand": "新西兰",
+  Norway: "挪威",
+  Panama: "巴拿马",
+  Paraguay: "巴拉圭",
+  Portugal: "葡萄牙",
+  Qatar: "卡塔尔",
+  "Saudi Arabia": "沙特阿拉伯",
+  Scotland: "苏格兰",
+  Senegal: "塞内加尔",
+  "South Africa": "南非",
+  "South Korea": "韩国",
+  Spain: "西班牙",
+  Sweden: "瑞典",
+  Switzerland: "瑞士",
+  Tunisia: "突尼斯",
+  Turkey: "土耳其",
+  Turkiye: "土耳其",
+  "United States": "美国",
+  "United States of America": "美国",
+  Uruguay: "乌拉圭",
+  Uzbekistan: "乌兹别克斯坦",
+};
+const TEAM_CODE_OVERRIDES = {
+  Algeria: "ALG",
+  Argentina: "ARG",
+  Australia: "AUS",
+  Austria: "AUT",
+  Belgium: "BEL",
+  "Bosnia and Herzegovina": "BIH",
+  Brazil: "BRA",
+  Canada: "CAN",
+  "Cape Verde": "CPV",
+  Colombia: "COL",
+  Croatia: "CRO",
+  Curaçao: "CUW",
+  Curacao: "CUW",
+  "Czech Republic": "CZE",
+  "Democratic Republic of the Congo": "COD",
+  Ecuador: "ECU",
+  Egypt: "EGY",
+  England: "ENG",
+  France: "FRA",
+  Germany: "GER",
+  Ghana: "GHA",
+  Haiti: "HAI",
+  Iran: "IRN",
+  Iraq: "IRQ",
+  "Ivory Coast": "CIV",
+  Japan: "JPN",
+  Jordan: "JOR",
+  Mexico: "MEX",
+  Morocco: "MAR",
+  Netherlands: "NED",
+  "New Zealand": "NZL",
+  Norway: "NOR",
+  Panama: "PAN",
+  Paraguay: "PAR",
+  Portugal: "POR",
+  Qatar: "QAT",
+  "Saudi Arabia": "KSA",
+  Scotland: "SCO",
+  Senegal: "SEN",
+  "South Africa": "RSA",
+  "South Korea": "KOR",
+  Spain: "ESP",
+  Sweden: "SWE",
+  Switzerland: "SUI",
+  Tunisia: "TUN",
+  Turkey: "TUR",
+  Turkiye: "TUR",
+  "United States": "USA",
+  "United States of America": "USA",
+  Uruguay: "URU",
+  Uzbekistan: "UZB",
 };
 
 const seedMatches = [
@@ -392,7 +501,7 @@ const els = {
 init();
 
 function init() {
-  els.referenceInput.value = toDatetimeLocal(state.referenceAt);
+  els.referenceInput.value = toBeijingDatetimeLocal(state.referenceAt);
   els.limitSelect.value = state.limit;
   if (SHOW_ADMIN_TOOLS && els.oddsApiKeyInput && els.oddsSportKeyInput && els.oddsRegionSelect) {
     els.oddsApiKeyInput.value = localStorage.getItem(ODDS_API_KEY_STORAGE) || "";
@@ -418,7 +527,7 @@ function bindEvents() {
   });
 
   els.referenceInput.addEventListener("change", (event) => {
-    const nextDate = new Date(event.target.value);
+    const nextDate = parseBeijingDatetimeLocal(event.target.value);
     if (Number.isNaN(nextDate.getTime())) return;
     state.referenceAt = nextDate;
     state.selectedId = null;
@@ -696,6 +805,7 @@ async function syncWorldCupSchedule(options = {}) {
       ...state.liveMeta,
       scheduleSyncedAt: syncedAt,
       scheduleSource: WORLDCUP26_GAMES_URL,
+      scheduleFormatVersion: LIVE_SCHEDULE_FORMAT_VERSION,
       lastError: "",
       lastScheduleCount: liveMatches.length,
     };
@@ -721,7 +831,8 @@ async function maybeAutoSyncSchedule() {
   const hasRecentSync = Number.isFinite(lastSync) && Date.now() - lastSync <= AUTO_SCHEDULE_SYNC_MAX_AGE_MS;
   const hasLikelyFullSchedule = state.matches.length >= MIN_LIVE_SCHEDULE_MATCHES;
   const hasLiveFinishedMatches = state.matches.some(isFinishedMatch);
-  if (hasRecentSync && hasLikelyFullSchedule && hasLiveFinishedMatches) return;
+  const hasCurrentFormat = state.liveMeta.scheduleFormatVersion === LIVE_SCHEDULE_FORMAT_VERSION;
+  if (hasRecentSync && hasLikelyFullSchedule && hasLiveFinishedMatches && hasCurrentFormat) return;
   await syncWorldCupSchedule({ silent: true, preserveView: true });
 }
 
@@ -1686,8 +1797,8 @@ function readMatchFromEditor(existing, form, overrides = {}) {
   const formData = new FormData(form);
   const home = cleanText(formData.get("home"));
   const away = cleanText(formData.get("away"));
-  const kickoff = parseLocalDateTime(formData.get("kickoffUtc"));
-  const generatedAt = parseLocalDateTime(formData.get("generatedAt")) || new Date();
+  const kickoff = parseBeijingDatetimeLocal(formData.get("kickoffUtc"));
+  const generatedAt = parseBeijingDatetimeLocal(formData.get("generatedAt")) || new Date();
   const lambdaHome = readPositiveNumber(formData.get("lambdaHome"), 1.25);
   const lambdaAway = readPositiveNumber(formData.get("lambdaAway"), 1.05);
 
@@ -1952,8 +2063,8 @@ function renderEditor(match) {
         ${renderInput("客队代码", "awayCode", match.awayCode)}
         ${renderInput("主队英文", "homeAlt", match.homeAlt)}
         ${renderInput("客队英文", "awayAlt", match.awayAlt)}
-        ${renderInput("开赛时间", "kickoffUtc", toDatetimeLocal(new Date(match.kickoffUtc)), "datetime-local")}
-        ${renderInput("概率快照", "generatedAt", toDatetimeLocal(new Date(match.generatedAt || match.kickoffUtc)), "datetime-local")}
+        ${renderInput("开赛时间", "kickoffUtc", toBeijingDatetimeLocal(new Date(match.kickoffUtc)), "datetime-local")}
+        ${renderInput("概率快照", "generatedAt", toBeijingDatetimeLocal(new Date(match.generatedAt || match.kickoffUtc)), "datetime-local")}
         ${renderInput("阶段", "stage", match.stage)}
         ${renderInput("小组", "group", match.group)}
         ${renderInput("场地", "venue", match.venue, "text", "wide")}
@@ -2670,9 +2781,9 @@ function normalizeWorldCup26Payload(payload) {
 
 function normalizeWorldCup26Game(game) {
   if (!game || typeof game !== "object") return null;
-  const home = cleanText(game.home_team_name_en || game.homeTeam || game.home);
-  const away = cleanText(game.away_team_name_en || game.awayTeam || game.away);
-  if (!home || !away) return null;
+  const homeEn = cleanText(game.home_team_name_en || game.homeTeam || game.home);
+  const awayEn = cleanText(game.away_team_name_en || game.awayTeam || game.away);
+  if (!homeEn || !awayEn) return null;
 
   const kickoff = parseWorldCup26Date(game.local_date, game.stadium_id);
   if (!kickoff) return null;
@@ -2682,19 +2793,21 @@ function normalizeWorldCup26Game(game) {
   const group = cleanText(game.group);
   const type = cleanText(game.type);
   const stage = type ? toTitle(type.replace(/_/g, " ")) : "World Cup 2026";
+  const home = localizeTeamName(homeEn);
+  const away = localizeTeamName(awayEn);
 
   return {
-    id: `worldcup26-${game.id || `${normalizeTeamKey(home)}-${normalizeTeamKey(away)}-${kickoff.toISOString()}`}`,
+    id: `worldcup26-${game.id || `${normalizeTeamKey(homeEn)}-${normalizeTeamKey(awayEn)}-${kickoff.toISOString()}`}`,
     kickoffUtc: kickoff.toISOString(),
     stage,
     group: group ? `Group ${group}` : "未分组",
     venue: stadium?.name || cleanText(game.venue) || "",
     home,
-    homeAlt: home,
-    homeCode: codeFromName(home),
+    homeAlt: homeEn,
+    homeCode: codeFromName(homeEn),
     away,
-    awayAlt: away,
-    awayCode: codeFromName(away),
+    awayAlt: awayEn,
+    awayCode: codeFromName(awayEn),
     lambdaHome: 1.25,
     lambdaAway: 1.05,
     result,
@@ -2734,27 +2847,29 @@ function parseWorldCup26Date(value, stadiumId) {
 
 function normalizeOddsEvent(event) {
   if (!event || typeof event !== "object") return null;
-  const home = cleanText(event.home_team);
-  const away = cleanText(event.away_team);
+  const homeEn = cleanText(event.home_team);
+  const awayEn = cleanText(event.away_team);
   const kickoff = new Date(event.commence_time);
-  if (!home || !away || Number.isNaN(kickoff.getTime())) return null;
+  if (!homeEn || !awayEn || Number.isNaN(kickoff.getTime())) return null;
 
-  const odds = extractAverageH2hOdds(event, home, away);
+  const odds = extractAverageH2hOdds(event, homeEn, awayEn);
   if (!odds) return null;
   const estimate = estimateLambdasFromOdds(odds.home, odds.draw, odds.away);
+  const home = localizeTeamName(homeEn);
+  const away = localizeTeamName(awayEn);
 
   return {
-    id: `oddsapi-${event.id || `${normalizeTeamKey(home)}-${normalizeTeamKey(away)}-${kickoff.toISOString()}`}`,
+    id: `oddsapi-${event.id || `${normalizeTeamKey(homeEn)}-${normalizeTeamKey(awayEn)}-${kickoff.toISOString()}`}`,
     kickoffUtc: kickoff.toISOString(),
     stage: "World Cup 2026",
     group: "未分组",
     venue: "",
     home,
-    homeAlt: home,
-    homeCode: codeFromName(home),
+    homeAlt: homeEn,
+    homeCode: codeFromName(homeEn),
     away,
-    awayAlt: away,
-    awayCode: codeFromName(away),
+    awayAlt: awayEn,
+    awayCode: codeFromName(awayEn),
     lambdaHome: estimate.lambdaHome,
     lambdaAway: estimate.lambdaAway,
     odds,
@@ -2960,10 +3075,17 @@ function average(values) {
 }
 
 function codeFromName(name) {
+  const mappedCode = TEAM_CODE_OVERRIDES[cleanText(name)];
+  if (mappedCode) return mappedCode;
   return cleanText(name)
     .replace(/[^a-z]/gi, "")
     .slice(0, 3)
     .toUpperCase() || "TBD";
+}
+
+function localizeTeamName(name) {
+  const cleanName = cleanText(name);
+  return TEAM_NAME_ZH[cleanName] || cleanName;
 }
 
 function toTitle(value) {
@@ -2993,33 +3115,71 @@ function formatNumber(value) {
 function formatDate(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "-";
-  return new Intl.DateTimeFormat("zh-CN", {
+  return `${new Intl.DateTimeFormat("zh-CN", {
+    timeZone: BEIJING_TIME_ZONE,
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
-  }).format(date);
+    hourCycle: "h23",
+  }).format(date)} 北京时间`;
 }
 
 function formatDateFull(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "-";
-  return new Intl.DateTimeFormat("zh-CN", {
+  return `${new Intl.DateTimeFormat("zh-CN", {
+    timeZone: BEIJING_TIME_ZONE,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
-    timeZoneName: "short",
-  }).format(date);
+    hourCycle: "h23",
+  }).format(date)} 北京时间`;
 }
 
 function toDatetimeLocal(date) {
   if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "";
   const pad = (number) => String(number).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function toBeijingDatetimeLocal(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "";
+  const parts = getBeijingDateTimeParts(date);
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
+}
+
+function parseBeijingDatetimeLocal(value) {
+  const text = cleanText(value);
+  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/);
+  if (!match) return parseLocalDateTime(text);
+  const [, year, month, day, hour, minute] = match.map(Number);
+  return new Date(Date.UTC(year, month - 1, day, hour, minute) - BEIJING_OFFSET_MINUTES * 60 * 1000);
+}
+
+function getBeijingDateTimeParts(date) {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: BEIJING_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    hourCycle: "h23",
+  });
+  const parts = Object.fromEntries(formatter.formatToParts(date).map((part) => [part.type, part.value]));
+  return {
+    year: parts.year,
+    month: parts.month,
+    day: parts.day,
+    hour: parts.hour === "24" ? "00" : parts.hour,
+    minute: parts.minute,
+  };
 }
 
 function escapeHtml(value) {
