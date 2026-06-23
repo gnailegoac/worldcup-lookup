@@ -16,7 +16,7 @@ const MAX_WDL_GOALS = 12;
 const SHOW_ADMIN_TOOLS = false;
 const AUTO_SCHEDULE_SYNC_MAX_AGE_MS = 15 * 60 * 1000;
 const MIN_LIVE_SCHEDULE_MATCHES = 60;
-const LIVE_SCHEDULE_FORMAT_VERSION = "official-full-schedule-fallback-20260623";
+const LIVE_SCHEDULE_FORMAT_VERSION = "official-full-schedule-ratings-20260623";
 const BEIJING_TIME_ZONE = "Asia/Shanghai";
 const BEIJING_OFFSET_MINUTES = 8 * 60;
 const WORLDCUP26_STADIUMS = {
@@ -142,6 +142,59 @@ const TEAM_CODE_OVERRIDES = {
   "United States of America": "USA",
   Uruguay: "URU",
   Uzbekistan: "UZB",
+};
+const TEAM_STRENGTH_RATINGS = {
+  Argentina: 1980,
+  France: 1970,
+  Spain: 1940,
+  England: 1925,
+  Brazil: 1910,
+  Portugal: 1890,
+  Netherlands: 1870,
+  Belgium: 1845,
+  Germany: 1835,
+  Uruguay: 1815,
+  Colombia: 1800,
+  Croatia: 1790,
+  Morocco: 1760,
+  "United States": 1750,
+  "United States of America": 1750,
+  Mexico: 1740,
+  Japan: 1730,
+  "Czech Republic": 1725,
+  Switzerland: 1720,
+  Austria: 1710,
+  Senegal: 1705,
+  Ecuador: 1700,
+  Sweden: 1690,
+  Turkey: 1685,
+  Turkiye: 1685,
+  Iran: 1670,
+  "South Korea": 1665,
+  Australia: 1655,
+  "Ivory Coast": 1650,
+  Norway: 1645,
+  Paraguay: 1640,
+  Ghana: 1635,
+  Tunisia: 1620,
+  Scotland: 1610,
+  Algeria: 1605,
+  Canada: 1600,
+  "Bosnia and Herzegovina": 1595,
+  "Saudi Arabia": 1585,
+  Qatar: 1570,
+  "South Africa": 1560,
+  Egypt: 1555,
+  Panama: 1540,
+  "Democratic Republic of the Congo": 1530,
+  Jordan: 1510,
+  Iraq: 1505,
+  Uzbekistan: 1500,
+  Haiti: 1480,
+  "Cape Verde": 1470,
+  "New Zealand": 1450,
+  Curaçao: 1420,
+  Curacao: 1420,
 };
 
 const seedMatches = [
@@ -2849,6 +2902,23 @@ function scoreProbability(match, homeScore, awayScore) {
   return poisson(homeLambda, homeScore) * poisson(awayLambda, awayScore);
 }
 
+function estimateLambdasFromTeamStrength(homeName, awayName) {
+  const homeRating = getTeamStrengthRating(homeName);
+  const awayRating = getTeamStrengthRating(awayName);
+  const ratingDiff = clampNumber((homeRating - awayRating) / 450, -1.4, 1.4);
+  const quality = clampNumber(((homeRating + awayRating) / 2 - 1650) / 500, -0.35, 0.35);
+  const totalGoals = clampNumber(2.45 + quality * 0.35, 1.85, 3.15);
+  const homeShare = clampNumber(0.5 + ratingDiff * 0.17, 0.28, 0.72);
+  return {
+    lambdaHome: roundToTwo(totalGoals * homeShare),
+    lambdaAway: roundToTwo(totalGoals * (1 - homeShare)),
+  };
+}
+
+function getTeamStrengthRating(name) {
+  return TEAM_STRENGTH_RATINGS[cleanText(name)] || 1600;
+}
+
 function poissonDistribution(lambda, maxGoals) {
   return Array.from({ length: maxGoals + 1 }, (_, index) => poisson(lambda, index));
 }
@@ -2867,6 +2937,14 @@ function safeLambda(value, fallback) {
   const number = Number(value);
   if (!Number.isFinite(number) || number <= 0) return fallback;
   return Math.min(5, Math.max(0.05, number));
+}
+
+function clampNumber(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function roundToTwo(value) {
+  return Number(value.toFixed(2));
 }
 
 function loadMatches() {
@@ -2918,6 +2996,7 @@ function normalizeWorldCup26Game(game) {
   const stage = type ? toTitle(type.replace(/_/g, " ")) : "World Cup 2026";
   const home = localizeTeamName(homeEn);
   const away = localizeTeamName(awayEn);
+  const model = estimateLambdasFromTeamStrength(homeEn, awayEn);
 
   return {
     id: `worldcup26-${game.id || `${normalizeTeamKey(homeEn)}-${normalizeTeamKey(awayEn)}-${kickoff.toISOString()}`}`,
@@ -2931,11 +3010,11 @@ function normalizeWorldCup26Game(game) {
     away,
     awayAlt: awayEn,
     awayCode: codeFromName(awayEn),
-    lambdaHome: 1.25,
-    lambdaAway: 1.05,
+    lambdaHome: model.lambdaHome,
+    lambdaAway: model.lambdaAway,
     result,
     generatedAt: new Date().toISOString(),
-    source: "WorldCup26 live API",
+    source: "WorldCup26 live API + team strength model",
     liveStatus: normalizeWorldCup26Status(game),
     rawLocalDate: cleanText(game.local_date),
   };
