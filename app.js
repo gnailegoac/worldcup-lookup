@@ -12,6 +12,7 @@ const THE_ODDS_API_BASE = "https://api.the-odds-api.com/v4";
 const DEMO_REFERENCE_AT = "2026-06-22T16:00:00Z";
 const MAX_EXACT_GOALS = 6;
 const MAX_WDL_GOALS = 12;
+const SHOW_ADMIN_TOOLS = false;
 const WORLDCUP26_STADIUMS = {
   1: { name: "Mexico City Stadium", city: "Mexico City", offsetMinutes: -360 },
   2: { name: "Estadio Guadalajara", city: "Guadalajara", offsetMinutes: -360 },
@@ -376,9 +377,11 @@ init();
 
 function init() {
   els.referenceInput.value = toDatetimeLocal(state.referenceAt);
-  els.oddsApiKeyInput.value = localStorage.getItem(ODDS_API_KEY_STORAGE) || "";
-  els.oddsSportKeyInput.value = localStorage.getItem(ODDS_SPORT_KEY_STORAGE) || "soccer_fifa_world_cup";
-  els.oddsRegionSelect.value = localStorage.getItem(ODDS_REGION_STORAGE) || "us";
+  if (SHOW_ADMIN_TOOLS && els.oddsApiKeyInput && els.oddsSportKeyInput && els.oddsRegionSelect) {
+    els.oddsApiKeyInput.value = localStorage.getItem(ODDS_API_KEY_STORAGE) || "";
+    els.oddsSportKeyInput.value = localStorage.getItem(ODDS_SPORT_KEY_STORAGE) || "soccer_fifa_world_cup";
+    els.oddsRegionSelect.value = localStorage.getItem(ODDS_REGION_STORAGE) || "us";
+  }
   const supabaseConfig = getSupabaseConfig();
   els.usernameInput.value = localStorage.getItem(USERNAME_STORAGE) || "";
   renderGroupOptions();
@@ -442,17 +445,19 @@ function bindEvents() {
   });
 
   els.matchDetail.addEventListener("click", handleDetailAction);
-  els.syncScheduleButton.addEventListener("click", syncWorldCupSchedule);
-  els.syncOddsButton.addEventListener("click", syncOdds);
-  els.oddsApiKeyInput.addEventListener("change", () => {
-    localStorage.setItem(ODDS_API_KEY_STORAGE, els.oddsApiKeyInput.value.trim());
-  });
-  els.oddsSportKeyInput.addEventListener("change", () => {
-    localStorage.setItem(ODDS_SPORT_KEY_STORAGE, els.oddsSportKeyInput.value.trim());
-  });
-  els.oddsRegionSelect.addEventListener("change", () => {
-    localStorage.setItem(ODDS_REGION_STORAGE, els.oddsRegionSelect.value);
-  });
+  if (SHOW_ADMIN_TOOLS) {
+    els.syncScheduleButton.addEventListener("click", syncWorldCupSchedule);
+    els.syncOddsButton.addEventListener("click", syncOdds);
+    els.oddsApiKeyInput.addEventListener("change", () => {
+      localStorage.setItem(ODDS_API_KEY_STORAGE, els.oddsApiKeyInput.value.trim());
+    });
+    els.oddsSportKeyInput.addEventListener("change", () => {
+      localStorage.setItem(ODDS_SPORT_KEY_STORAGE, els.oddsSportKeyInput.value.trim());
+    });
+    els.oddsRegionSelect.addEventListener("change", () => {
+      localStorage.setItem(ODDS_REGION_STORAGE, els.oddsRegionSelect.value);
+    });
+  }
   els.loginButton.addEventListener("click", loginWithUsername);
   els.registerButton.addEventListener("click", registerWithUsername);
   els.usernameInput.addEventListener("change", () => {
@@ -463,17 +468,19 @@ function bindEvents() {
   });
   els.signOutButton.addEventListener("click", signOut);
   els.refreshPredictionsButton.addEventListener("click", loadPredictions);
-  els.addMatchButton.addEventListener("click", addMatch);
-  els.importButton.addEventListener("click", () => els.importFile.click());
-  els.importFile.addEventListener("change", importData);
-  els.exportButton.addEventListener("click", exportData);
-  els.resetButton.addEventListener("click", () => {
-    state.matches = seedMatches.map((match) => ({ ...match }));
-    state.selectedId = null;
-    localStorage.removeItem(STORAGE_KEY);
-    renderGroupOptions();
-    render();
-  });
+  if (SHOW_ADMIN_TOOLS) {
+    els.addMatchButton.addEventListener("click", addMatch);
+    els.importButton.addEventListener("click", () => els.importFile.click());
+    els.importFile.addEventListener("change", importData);
+    els.exportButton.addEventListener("click", exportData);
+    els.resetButton.addEventListener("click", () => {
+      state.matches = seedMatches.map((match) => ({ ...match }));
+      state.selectedId = null;
+      localStorage.removeItem(STORAGE_KEY);
+      renderGroupOptions();
+      render();
+    });
+  }
 }
 
 function render() {
@@ -493,6 +500,7 @@ function renderTabs() {
 }
 
 function renderLiveStatus() {
+  if (!SHOW_ADMIN_TOOLS) return;
   const parts = [];
   if (state.liveMeta.scheduleSyncedAt) {
     parts.push(`赛程 ${formatDateFull(state.liveMeta.scheduleSyncedAt)}`);
@@ -1503,7 +1511,7 @@ function renderDetail(match) {
           <div><span>数据标签</span><strong>${escapeHtml(match.source || "本地数据")}</strong></div>
         </div>
 
-        ${renderEditor(match)}
+        ${SHOW_ADMIN_TOOLS ? renderEditor(match) : ""}
       </section>
 
       <section class="score-grid-wrap">

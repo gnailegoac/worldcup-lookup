@@ -13,21 +13,6 @@
           <p class="eyebrow">World Cup Probability Desk</p>
           <h1>世界杯比分概率查询</h1>
         </div>
-        <div class="topbar-actions">
-          <button class="icon-button" id="addMatchButton" type="button" aria-label="新增比赛" title="新增比赛">
-            <span aria-hidden="true">+</span>
-          </button>
-          <button class="icon-button" id="importButton" type="button" aria-label="导入数据" title="导入数据">
-            <span aria-hidden="true">↑</span>
-          </button>
-          <button class="icon-button" id="exportButton" type="button" aria-label="导出数据" title="导出数据">
-            <span aria-hidden="true">↓</span>
-          </button>
-          <button class="icon-button" id="resetButton" type="button" aria-label="恢复样例数据" title="恢复样例数据">
-            <span aria-hidden="true">↻</span>
-          </button>
-          <input id="importFile" type="file" accept="application/json,.json" hidden />
-        </div>
       </header>
 
       <section class="control-panel" aria-label="查询条件">
@@ -51,25 +36,6 @@
             <option value="8">8</option>
             <option value="all">全部</option>
           </select>
-        </div>
-      </section>
-
-      <section class="live-panel" aria-label="实时数据同步">
-        <div class="live-copy">
-          <span class="live-label">实时数据</span>
-          <strong id="liveStatus">未同步</strong>
-        </div>
-        <div class="live-controls">
-          <button class="action-button primary" id="syncScheduleButton" type="button">同步赛程/比分</button>
-          <input id="oddsApiKeyInput" type="password" placeholder="The Odds API key" autocomplete="off" />
-          <input id="oddsSportKeyInput" type="text" value="soccer_fifa_world_cup" aria-label="The Odds API sport key" />
-          <select id="oddsRegionSelect" aria-label="赔率地区">
-            <option value="us">US</option>
-            <option value="uk">UK</option>
-            <option value="eu">EU</option>
-            <option value="au">AU</option>
-          </select>
-          <button class="action-button" id="syncOddsButton" type="button">同步赔率</button>
         </div>
       </section>
 
@@ -130,7 +96,7 @@
       </section>
     </main>
 
-    <script src="supabase-config.js?v=20260622-userpass"></script>
-    <script src="app.js?v=20260622-userpass" defer></script>
+    <script src="supabase-config.js?v=20260623-public"></script>
+    <script src="app.js?v=20260623-public" defer></script>
   </body>
 </html>
