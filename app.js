@@ -1145,6 +1145,12 @@ function resetAdminState() {
 }
 
 async function handleAdminAction(event) {
+  const deleteUserButton = event.target.closest("[data-action='admin-delete-user']");
+  if (deleteUserButton) {
+    await deleteAdminUser(deleteUserButton.dataset.adminUserId);
+    return;
+  }
+
   const actionButton = event.target.closest("[data-action='admin-delete-user-predictions']");
   if (actionButton) {
     await deleteAdminUserPredictions(actionButton.dataset.adminUserId);
@@ -1183,6 +1189,37 @@ async function deleteAdminUserPredictions(userId) {
   }
 
   state.adminNotice = `已清空 ${name} 的 ${Number(result.data || 0)} 条预测记录。`;
+  await loadPredictions();
+}
+
+async function deleteAdminUser(userId) {
+  if (!state.supabase?.rpc || !state.isAdmin || !userId) return;
+  if (userId === state.authSession?.user?.id) {
+    state.adminNotice = "不能删除当前登录的管理员账号。";
+    renderAdminPanel();
+    return;
+  }
+
+  const user = state.adminUsers.find((item) => item.user_id === userId);
+  const name = user?.username || `用户 ${shortUserId(userId)}`;
+  const confirmed = window.confirm(`确认永久删除 ${name}？这个操作会同时删除他的预测记录，不能撤销。`);
+  if (!confirmed) return;
+
+  state.isLoadingAdmin = true;
+  state.adminNotice = `正在删除 ${name}...`;
+  renderAdminPanel();
+
+  const result = await state.supabase.rpc("admin_delete_user", { target_user_id: userId });
+  if (result.error) {
+    state.adminNotice = `删除用户失败：${result.error.message}`;
+    state.isLoadingAdmin = false;
+    renderAdminPanel();
+    return;
+  }
+
+  const deletedCount = Number(result.data || 0);
+  state.selectedAdminUserId = "";
+  state.adminNotice = deletedCount ? `已删除用户 ${name}。` : `没有找到可删除的用户 ${name}。`;
   await loadPredictions();
 }
 
@@ -1948,6 +1985,7 @@ function renderAdminPredictions() {
   if (!user) return `<div class="empty-list compact-empty">请选择一个用户</div>`;
 
   const deleteDisabled = Number(user.prediction_count || 0) <= 0 ? "disabled" : "";
+  const deleteUserDisabled = user.user_id === state.authSession?.user?.id ? "disabled" : "";
   const records = state.adminPredictions.length
     ? state.adminPredictions.map((prediction) => renderPredictionCard(prediction, false)).join("")
     : `<div class="empty-list compact-empty">这个用户没有预测记录</div>`;
@@ -1958,7 +1996,10 @@ function renderAdminPredictions() {
         <strong>${escapeHtml(user.username || `用户 ${shortUserId(user.user_id)}`)}</strong>
         <span>注册 ${escapeHtml(formatDateFull(user.auth_created_at))}</span>
       </div>
-      <button type="button" class="action-button danger" data-action="admin-delete-user-predictions" data-admin-user-id="${escapeHtml(user.user_id)}" ${deleteDisabled}>清空预测</button>
+      <div class="admin-actions">
+        <button type="button" class="action-button danger" data-action="admin-delete-user-predictions" data-admin-user-id="${escapeHtml(user.user_id)}" ${deleteDisabled}>清空预测</button>
+        <button type="button" class="action-button danger" data-action="admin-delete-user" data-admin-user-id="${escapeHtml(user.user_id)}" ${deleteUserDisabled}>删除用户</button>
+      </div>
     </div>
     ${records}
   `;

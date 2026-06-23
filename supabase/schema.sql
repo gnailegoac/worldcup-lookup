@@ -259,3 +259,32 @@ $$;
 
 revoke all on function public.admin_delete_user_predictions(uuid) from public;
 grant execute on function public.admin_delete_user_predictions(uuid) to authenticated;
+
+create or replace function public.admin_delete_user(target_user_id uuid)
+returns integer
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+declare
+  deleted_count integer;
+begin
+  if not public.is_admin() then
+    raise exception 'not authorized' using errcode = '42501';
+  end if;
+
+  if target_user_id = auth.uid() then
+    raise exception 'cannot delete current admin user' using errcode = '42501';
+  end if;
+
+  delete from auth.users users
+  where users.id = target_user_id
+    and users.email like '%@users.worldcup-lookup.app';
+
+  get diagnostics deleted_count = row_count;
+  return deleted_count;
+end;
+$$;
+
+revoke all on function public.admin_delete_user(uuid) from public;
+grant execute on function public.admin_delete_user(uuid) to authenticated;

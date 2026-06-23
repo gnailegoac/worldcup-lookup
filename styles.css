@@ -962,6 +962,13 @@ h1 {
   font-weight: 800;
 }
 
+.admin-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .compact-empty {
   min-height: 120px;
 }
