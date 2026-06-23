@@ -7,6 +7,7 @@ const SUPABASE_URL_STORAGE = "worldcup_probability_supabase_url_v1";
 const SUPABASE_ANON_KEY_STORAGE = "worldcup_probability_supabase_anon_key_v1";
 const SUPABASE_SESSION_STORAGE = "worldcup_probability_supabase_session_v1";
 const USERNAME_STORAGE = "worldcup_probability_username_v1";
+const INTERNAL_AUTH_EMAIL_DOMAIN = "@users.worldcup-lookup.app";
 const WORLDCUP26_GAMES_URL = "https://worldcup26.ir/get/games";
 const THE_ODDS_API_BASE = "https://api.the-odds-api.com/v4";
 const DEMO_REFERENCE_AT = "2026-06-22T16:00:00Z";
@@ -755,13 +756,13 @@ async function connectSupabase() {
     const { data, error } = await state.supabase.auth.getSession();
     if (error) throw error;
     state.authSession = data.session;
-    state.authStatus = data.session ? `已进入：${getSessionDisplayName(data.session)}` : "Supabase 已连接";
+    state.authStatus = data.session ? `已进入：${getCurrentDisplayName()}` : "Supabase 已连接";
     state.authNotice = "";
 
     if (state.authSubscription) state.authSubscription.unsubscribe();
     const { data: listener } = state.supabase.auth.onAuthStateChange((_event, session) => {
       state.authSession = session;
-      state.authStatus = session ? `已进入：${getSessionDisplayName(session)}` : "Supabase 已连接";
+      state.authStatus = session ? `已进入：${getCurrentDisplayName()}` : "Supabase 已连接";
       state.authNotice = "";
       loadPredictions();
     });
@@ -870,9 +871,23 @@ async function submitPrediction(match) {
 
   state.predictionNotice = "正在保存预测...";
   renderDetail(match);
-  const { error } = await state.supabase
+  let { error } = await state.supabase
     .from("predictions")
     .upsert(payload, { onConflict: "user_id,match_id" });
+
+  if (error && isPredictionProbabilitySchemaError(error)) {
+    const legacyPayload = stripPredictionProbabilitySnapshot(payload);
+    const legacyResult = await state.supabase
+      .from("predictions")
+      .upsert(legacyPayload, { onConflict: "user_id,match_id" });
+    error = legacyResult.error;
+    if (!error) {
+      state.predictionNotice = "预测已保存。请重新运行 supabase/schema.sql 后，新的预测记录会保存当时系统概率。";
+      await loadPredictions();
+      return;
+    }
+  }
+
   if (error) {
     state.predictionNotice = `预测提交失败：${error.message}`;
     render();
@@ -895,6 +910,7 @@ function buildPredictionPayload(match, formData) {
     display_name: getCurrentDisplayName(),
     prediction_type: predictionType,
     is_public: isPublic,
+    model_snapshot_at: new Date().toISOString(),
   };
 
   if (predictionType === "outcome") {
@@ -903,7 +919,13 @@ function buildPredictionPayload(match, formData) {
       state.predictionNotice = "请选择有效的胜平负预测。";
       return null;
     }
-    return { ...base, outcome, home_score: null, away_score: null };
+    return {
+      ...base,
+      outcome,
+      home_score: null,
+      away_score: null,
+      ...getOutcomeProbabilitySnapshot(match, outcome),
+    };
   }
 
   if (predictionType === "score") {
@@ -913,11 +935,58 @@ function buildPredictionPayload(match, formData) {
       state.predictionNotice = "请输入有效的比分预测。";
       return null;
     }
-    return { ...base, outcome: null, home_score: homeScore, away_score: awayScore };
+    return {
+      ...base,
+      outcome: null,
+      home_score: homeScore,
+      away_score: awayScore,
+      model_probability: normalizeStoredProbability(scoreProbability(match, homeScore, awayScore)),
+      model_probability_label: `${homeScore}-${awayScore}`,
+    };
   }
 
   state.predictionNotice = "请选择预测类型。";
   return null;
+}
+
+function getOutcomeProbabilitySnapshot(match, outcome) {
+  const probability = computeProbability(match);
+  const outcomeMap = {
+    home: {
+      model_probability: probability.homeWin,
+      model_probability_label: `${match.home} 胜`,
+    },
+    draw: {
+      model_probability: probability.draw,
+      model_probability_label: "平局",
+    },
+    away: {
+      model_probability: probability.awayWin,
+      model_probability_label: `${match.away} 胜`,
+    },
+  };
+  const snapshot = outcomeMap[outcome] || {};
+  return {
+    model_probability: normalizeStoredProbability(snapshot.model_probability),
+    model_probability_label: snapshot.model_probability_label || "",
+  };
+}
+
+function normalizeStoredProbability(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const probability = Number(value);
+  if (!Number.isFinite(probability)) return null;
+  return Math.min(1, Math.max(0, probability));
+}
+
+function stripPredictionProbabilitySnapshot(payload) {
+  const { model_probability, model_probability_label, model_snapshot_at, ...legacyPayload } = payload;
+  return legacyPayload;
+}
+
+function isPredictionProbabilitySchemaError(error) {
+  const text = `${error?.message || ""} ${error?.details || ""} ${error?.hint || ""}`;
+  return /model_probability|model_probability_label|model_snapshot_at/i.test(text);
 }
 
 function readUsernamePassword() {
@@ -935,7 +1004,7 @@ function readUsernamePassword() {
 }
 
 function usernameToInternalEmail(username) {
-  return `u_${hashString(username.toLocaleLowerCase())}@users.worldcup-lookup.app`;
+  return `u_${hashString(username.toLocaleLowerCase())}${INTERNAL_AUTH_EMAIL_DOMAIN}`;
 }
 
 function hashString(value) {
@@ -1716,6 +1785,7 @@ function renderPredictionList({ predictions, emptyText, showOwner }) {
 }
 
 function renderPredictionCard(prediction, showOwner) {
+  const ownerName = getPredictionDisplayName(prediction);
   return `
     <article class="prediction-card">
       <div class="prediction-card-head">
@@ -1724,11 +1794,11 @@ function renderPredictionCard(prediction, showOwner) {
       </div>
       <div class="prediction-card-body">
         <span>${escapeHtml(formatPrediction(prediction))}</span>
-        <span>${prediction.is_public ? "公开" : "私密"}</span>
+        <span>${escapeHtml(formatPredictionMeta(prediction))}</span>
       </div>
       <div class="prediction-card-foot">
         <span>${escapeHtml(formatDateFull(prediction.created_at))}</span>
-        ${showOwner ? `<span>${escapeHtml(prediction.display_name || shortUserId(prediction.user_id))}</span>` : ""}
+        ${showOwner ? `<span>${escapeHtml(ownerName)}</span>` : ""}
       </div>
     </article>
   `;
@@ -1741,6 +1811,31 @@ function formatPrediction(prediction) {
   if (prediction.outcome === "home") return `${prediction.home_team} 胜`;
   if (prediction.outcome === "away") return `${prediction.away_team} 胜`;
   return "平局";
+}
+
+function formatPredictionMeta(prediction) {
+  const parts = [prediction.is_public ? "公开" : "私密"];
+  const probability = formatStoredModelProbability(prediction);
+  if (probability) parts.push(`当时系统概率 ${probability}`);
+  return parts.join(" · ");
+}
+
+function formatStoredModelProbability(prediction) {
+  const probability = normalizeStoredProbability(prediction.model_probability);
+  return probability === null ? "" : formatPercent(probability);
+}
+
+function getPredictionDisplayName(prediction) {
+  const displayName = cleanText(prediction.display_name);
+  if (displayName && !isInternalAuthEmail(displayName)) return displayName;
+  if (prediction.user_id === state.authSession?.user?.id) {
+    return getCurrentDisplayName();
+  }
+  return `用户 ${shortUserId(prediction.user_id)}`;
+}
+
+function isInternalAuthEmail(value) {
+  return cleanText(value).toLocaleLowerCase().endsWith(INTERNAL_AUTH_EMAIL_DOMAIN);
 }
 
 function getVisibleMatches() {
@@ -2272,16 +2367,12 @@ function getSupabaseConfig() {
 }
 
 function getCurrentDisplayName() {
-  return getSessionDisplayName(state.authSession) || localStorage.getItem(USERNAME_STORAGE) || "用户";
+  return getSessionDisplayName(state.authSession) || cleanText(localStorage.getItem(USERNAME_STORAGE)) || "用户";
 }
 
 function getSessionDisplayName(session) {
-  return (
-    session?.user?.user_metadata?.display_name ||
-    session?.user?.user_metadata?.name ||
-    session?.user?.email ||
-    ""
-  );
+  const metadata = session?.user?.user_metadata || {};
+  return cleanText(metadata.display_name || metadata.username || metadata.name);
 }
 
 function isMatchPredictable(match) {

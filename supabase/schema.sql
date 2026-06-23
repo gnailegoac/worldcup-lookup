@@ -13,9 +13,15 @@ create table if not exists public.predictions (
   outcome text check (outcome in ('home', 'draw', 'away')),
   home_score integer check (home_score >= 0),
   away_score integer check (away_score >= 0),
+  model_probability numeric,
+  model_probability_label text,
+  model_snapshot_at timestamptz,
   is_public boolean not null default false,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
+  constraint predictions_model_probability_check check (
+    model_probability is null or (model_probability >= 0 and model_probability <= 1)
+  ),
   constraint predictions_score_shape check (
     (prediction_type = 'outcome' and outcome is not null and home_score is null and away_score is null)
     or
@@ -26,6 +32,22 @@ create table if not exists public.predictions (
 
 alter table public.predictions
   add column if not exists display_name text;
+
+alter table public.predictions
+  add column if not exists model_probability numeric;
+
+alter table public.predictions
+  add column if not exists model_probability_label text;
+
+alter table public.predictions
+  add column if not exists model_snapshot_at timestamptz;
+
+alter table public.predictions
+  drop constraint if exists predictions_model_probability_check;
+
+alter table public.predictions
+  add constraint predictions_model_probability_check
+  check (model_probability is null or (model_probability >= 0 and model_probability <= 1));
 
 create index if not exists predictions_user_created_idx
   on public.predictions (user_id, created_at desc);
