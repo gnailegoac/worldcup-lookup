@@ -432,7 +432,7 @@ const state = {
   view: "upcoming",
   query: "",
   group: "all",
-  limit: "5",
+  limit: "8",
   selectedId: null,
   referenceAt: getInitialReference(),
   scoreHome: 1,
@@ -501,8 +501,8 @@ const els = {
 init();
 
 function init() {
-  els.referenceInput.value = toBeijingDatetimeLocal(state.referenceAt);
-  els.limitSelect.value = state.limit;
+  if (els.referenceInput) els.referenceInput.value = toBeijingDatetimeLocal(state.referenceAt);
+  if (els.limitSelect) els.limitSelect.value = state.limit;
   if (SHOW_ADMIN_TOOLS && els.oddsApiKeyInput && els.oddsSportKeyInput && els.oddsRegionSelect) {
     els.oddsApiKeyInput.value = localStorage.getItem(ODDS_API_KEY_STORAGE) || "";
     els.oddsSportKeyInput.value = localStorage.getItem(ODDS_SPORT_KEY_STORAGE) || "soccer_fifa_world_cup";
@@ -520,30 +520,38 @@ function init() {
 }
 
 function bindEvents() {
-  els.searchInput.addEventListener("input", (event) => {
-    state.query = event.target.value.trim();
-    state.selectedId = null;
-    render();
-  });
+  if (els.searchInput) {
+    els.searchInput.addEventListener("input", (event) => {
+      state.query = event.target.value.trim();
+      state.selectedId = null;
+      render();
+    });
+  }
 
-  els.referenceInput.addEventListener("change", (event) => {
-    const nextDate = parseBeijingDatetimeLocal(event.target.value);
-    if (Number.isNaN(nextDate.getTime())) return;
-    state.referenceAt = nextDate;
-    state.selectedId = null;
-    render();
-  });
+  if (els.referenceInput) {
+    els.referenceInput.addEventListener("change", (event) => {
+      const nextDate = parseBeijingDatetimeLocal(event.target.value);
+      if (Number.isNaN(nextDate.getTime())) return;
+      state.referenceAt = nextDate;
+      state.selectedId = null;
+      render();
+    });
+  }
 
-  els.groupFilter.addEventListener("change", (event) => {
-    state.group = event.target.value;
-    state.selectedId = null;
-    render();
-  });
+  if (els.groupFilter) {
+    els.groupFilter.addEventListener("change", (event) => {
+      state.group = event.target.value;
+      state.selectedId = null;
+      render();
+    });
+  }
 
-  els.limitSelect.addEventListener("change", (event) => {
-    state.limit = event.target.value;
-    render();
-  });
+  if (els.limitSelect) {
+    els.limitSelect.addEventListener("change", (event) => {
+      state.limit = event.target.value;
+      render();
+    });
+  }
 
   els.tabs.forEach((tab) => {
     tab.addEventListener("click", () => {
@@ -1862,6 +1870,10 @@ function persistLiveMeta() {
 }
 
 function renderGroupOptions() {
+  if (!els.groupFilter) {
+    state.group = "all";
+    return;
+  }
   const groups = [...new Set(state.matches.map((match) => match.group).filter(Boolean))].sort((a, b) =>
     a.localeCompare(b, "zh-CN"),
   );
@@ -1875,6 +1887,7 @@ function renderGroupOptions() {
 }
 
 function renderSummary() {
+  if (!els.upcomingCount || !els.historyCount || !els.strongestLean) return;
   const searchable = getSearchFilteredMatches();
   const ref = state.referenceAt.getTime();
   const upcoming = searchable.filter((match) => isUpcomingMatch(match, ref));
@@ -2500,7 +2513,7 @@ function getVisibleMatches() {
 function getVisibleLimit() {
   if (state.limit === "all") return Infinity;
   const limit = Number(state.limit);
-  return Number.isFinite(limit) && limit > 0 ? Math.trunc(limit) : 5;
+  return Number.isFinite(limit) && limit > 0 ? Math.trunc(limit) : 8;
 }
 
 function getKickoffTime(match) {
@@ -3024,7 +3037,7 @@ function getInitialReference() {
   const now = new Date();
   const start = new Date("2026-06-11T00:00:00Z");
   const end = new Date("2026-07-20T00:00:00Z");
-  return now >= start && now <= end ? now : new Date(DEMO_REFERENCE_AT);
+  return now >= start && now <= end ? getStartOfBeijingDay(now) : new Date(DEMO_REFERENCE_AT);
 }
 
 function getSupabaseConfig() {
@@ -3159,6 +3172,14 @@ function parseBeijingDatetimeLocal(value) {
   if (!match) return parseLocalDateTime(text);
   const [, year, month, day, hour, minute] = match.map(Number);
   return new Date(Date.UTC(year, month - 1, day, hour, minute) - BEIJING_OFFSET_MINUTES * 60 * 1000);
+}
+
+function getStartOfBeijingDay(date) {
+  const parts = getBeijingDateTimeParts(date);
+  return new Date(
+    Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day), 0, 0) -
+      BEIJING_OFFSET_MINUTES * 60 * 1000,
+  );
 }
 
 function getBeijingDateTimeParts(date) {

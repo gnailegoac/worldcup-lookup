@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>世界杯比分概率查询</title>
-    <link rel="stylesheet" href="styles.css?v=20260623-beijing-zh" />
+    <link rel="stylesheet" href="styles.css?v=20260623-simplified-upcoming" />
   </head>
   <body>
     <main class="app-shell">
@@ -14,30 +14,6 @@
           <h1>世界杯比分概率查询</h1>
         </div>
       </header>
-
-      <section class="control-panel" aria-label="查询条件">
-        <div class="control-group wide">
-          <label for="searchInput">球队 / 场地 / 阶段</label>
-          <input id="searchInput" type="search" placeholder="Argentina, 德国, Group J..." autocomplete="off" />
-        </div>
-        <div class="control-group">
-          <label for="referenceInput">查询时间（北京时间）</label>
-          <input id="referenceInput" type="datetime-local" />
-        </div>
-        <div class="control-group">
-          <label for="groupFilter">小组</label>
-          <select id="groupFilter"></select>
-        </div>
-        <div class="control-group compact">
-          <label for="limitSelect">场数</label>
-          <select id="limitSelect">
-            <option value="3">3</option>
-            <option value="5" selected>5</option>
-            <option value="8">8</option>
-            <option value="all">全部</option>
-          </select>
-        </div>
-      </section>
 
       <section class="account-panel" aria-label="用户账号">
         <div class="account-status">
@@ -58,21 +34,6 @@
         <button class="tab" type="button" data-view="history">历史</button>
         <button class="tab" type="button" data-view="all">全部</button>
       </nav>
-
-      <section class="summary-grid" aria-label="概率概览">
-        <article class="metric">
-          <span class="metric-label">后续比赛</span>
-          <strong id="upcomingCount">0</strong>
-        </article>
-        <article class="metric">
-          <span class="metric-label">历史样本</span>
-          <strong id="historyCount">0</strong>
-        </article>
-        <article class="metric metric-wide">
-          <span class="metric-label">当前最高倾向</span>
-          <strong id="strongestLean">-</strong>
-        </article>
-      </section>
 
       <section class="workspace">
         <aside class="match-list" aria-label="比赛列表" id="matchList"></aside>
@@ -120,7 +81,7 @@
       </section>
     </main>
 
-    <script src="supabase-config.js?v=20260623-beijing-zh"></script>
-    <script src="app.js?v=20260623-beijing-zh" defer></script>
+    <script src="supabase-config.js?v=20260623-simplified-upcoming"></script>
+    <script src="app.js?v=20260623-simplified-upcoming" defer></script>
   </body>
 </html>
