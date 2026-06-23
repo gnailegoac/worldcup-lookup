@@ -16,7 +16,7 @@ const MAX_WDL_GOALS = 12;
 const SHOW_ADMIN_TOOLS = false;
 const AUTO_SCHEDULE_SYNC_MAX_AGE_MS = 15 * 60 * 1000;
 const MIN_LIVE_SCHEDULE_MATCHES = 60;
-const LIVE_SCHEDULE_FORMAT_VERSION = "official-schedule-fallback-20260623";
+const LIVE_SCHEDULE_FORMAT_VERSION = "official-full-schedule-fallback-20260623";
 const BEIJING_TIME_ZONE = "Asia/Shanghai";
 const BEIJING_OFFSET_MINUTES = 8 * 60;
 const WORLDCUP26_STADIUMS = {
@@ -428,6 +428,50 @@ const seedMatches = [
 ];
 const SEED_MATCH_IDS = new Set(seedMatches.map((match) => match.id));
 const OFFICIAL_UPCOMING_SNAPSHOT = [
+  { id: "1", local_date: "06/11/2026 13:00", stadium_id: "1", home_team_name_en: "Mexico", away_team_name_en: "South Africa", home_score: "2", away_score: "0", group: "A", finished: "TRUE", time_elapsed: "finished", type: "group" },
+  { id: "2", local_date: "06/11/2026 20:00", stadium_id: "2", home_team_name_en: "South Korea", away_team_name_en: "Czech Republic", home_score: "2", away_score: "1", group: "A", finished: "TRUE", time_elapsed: "finished", type: "group" },
+  { id: "3", local_date: "06/12/2026 15:00", stadium_id: "12", home_team_name_en: "Canada", away_team_name_en: "Bosnia and Herzegovina", home_score: "1", away_score: "1", group: "B", finished: "TRUE", time_elapsed: "finished", type: "group" },
+  { id: "4", local_date: "06/12/2026 18:00", stadium_id: "16", home_team_name_en: "United States", away_team_name_en: "Paraguay", home_score: "4", away_score: "1", group: "D", finished: "TRUE", time_elapsed: "finished", type: "group" },
+  { id: "5", local_date: "06/13/2026 21:00", stadium_id: "9", home_team_name_en: "Haiti", away_team_name_en: "Scotland", home_score: "0", away_score: "1", group: "C", finished: "TRUE", time_elapsed: "finished", type: "group" },
+  { id: "6", local_date: "06/13/2026 21:00", stadium_id: "13", home_team_name_en: "Australia", away_team_name_en: "Turkey", home_score: "2", away_score: "0", group: "D", finished: "TRUE", time_elapsed: "finished", type: "group" },
+  { id: "7", local_date: "06/13/2026 18:00", stadium_id: "11", home_team_name_en: "Brazil", away_team_name_en: "Morocco", home_score: "1", away_score: "1", group: "C", finished: "TRUE", time_elapsed: "finished", type: "group" },
+  { id: "8", local_date: "06/13/2026 12:00", stadium_id: "15", home_team_name_en: "Qatar", away_team_name_en: "Switzerland", home_score: "1", away_score: "1", group: "B", finished: "TRUE", time_elapsed: "finished", type: "group" },
+  { id: "9", local_date: "06/14/2026 19:00", stadium_id: "10", home_team_name_en: "Ivory Coast", away_team_name_en: "Ecuador", home_score: "1", away_score: "0", group: "E", finished: "TRUE", time_elapsed: "finished", type: "group" },
+  { id: "10", local_date: "06/14/2026 12:00", stadium_id: "5", home_team_name_en: "Germany", away_team_name_en: "Curaçao", home_score: "7", away_score: "1", group: "E", finished: "TRUE", time_elapsed: "finished", type: "group" },
+  { id: "11", local_date: "06/14/2026 15:00", stadium_id: "4", home_team_name_en: "Netherlands", away_team_name_en: "Japan", home_score: "2", away_score: "2", group: "F", finished: "TRUE", time_elapsed: "finished", type: "group" },
+  { id: "12", local_date: "06/14/2026 20:00", stadium_id: "3", home_team_name_en: "Sweden", away_team_name_en: "Tunisia", home_score: "5", away_score: "1", group: "F", finished: "TRUE", time_elapsed: "finished", type: "group" },
+  { id: "13", local_date: "06/15/2026 18:00", stadium_id: "16", home_team_name_en: "Iran", away_team_name_en: "New Zealand", home_score: "2", away_score: "2", group: "G", finished: "TRUE", time_elapsed: "finished", type: "group" },
+  { id: "14", local_date: "06/15/2026 12:00", stadium_id: "7", home_team_name_en: "Spain", away_team_name_en: "Cape Verde", home_score: "0", away_score: "0", group: "H", finished: "TRUE", time_elapsed: "finished", type: "group" },
+  { id: "15", local_date: "06/15/2026 12:00", stadium_id: "14", home_team_name_en: "Belgium", away_team_name_en: "Egypt", home_score: "1", away_score: "1", group: "G", finished: "TRUE", time_elapsed: "finished", type: "group" },
+  { id: "16", local_date: "06/15/2026 18:00", stadium_id: "8", home_team_name_en: "Saudi Arabia", away_team_name_en: "Uruguay", home_score: "1", away_score: "1", group: "H", finished: "TRUE", time_elapsed: "finished", type: "group" },
+  { id: "17", local_date: "06/16/2026 15:00", stadium_id: "11", home_team_name_en: "France", away_team_name_en: "Senegal", home_score: "3", away_score: "1", group: "I", finished: "TRUE", time_elapsed: "finished", type: "group" },
+  { id: "18", local_date: "06/16/2026 18:00", stadium_id: "9", home_team_name_en: "Iraq", away_team_name_en: "Norway", home_score: "1", away_score: "4", group: "I", finished: "TRUE", time_elapsed: "finished", type: "group" },
+  { id: "19", local_date: "06/16/2026 20:00", stadium_id: "6", home_team_name_en: "Argentina", away_team_name_en: "Algeria", home_score: "3", away_score: "0", group: "J", finished: "TRUE", time_elapsed: "finished", type: "group" },
+  { id: "20", local_date: "06/16/2026 21:00", stadium_id: "15", home_team_name_en: "Austria", away_team_name_en: "Jordan", home_score: "3", away_score: "1", group: "J", finished: "TRUE", time_elapsed: "finished", type: "group" },
+  { id: "21", local_date: "06/17/2026 12:00", stadium_id: "5", home_team_name_en: "Portugal", away_team_name_en: "Democratic Republic of the Congo", home_score: "1", away_score: "1", group: "K", finished: "TRUE", time_elapsed: "Finished", type: "group" },
+  { id: "22", local_date: "06/17/2026 15:00", stadium_id: "4", home_team_name_en: "England", away_team_name_en: "Croatia", home_score: "4", away_score: "2", group: "L", finished: "TRUE", time_elapsed: "finished", type: "group" },
+  { id: "23", local_date: "06/17/2026 20:00", stadium_id: "1", home_team_name_en: "Uzbekistan", away_team_name_en: "Colombia", home_score: "1", away_score: "3", group: "K", finished: "TRUE", time_elapsed: "finished", type: "group" },
+  { id: "24", local_date: "06/17/2026 19:00", stadium_id: "12", home_team_name_en: "Ghana", away_team_name_en: "Panama", home_score: "1", away_score: "0", group: "L", finished: "TRUE", time_elapsed: "finished", type: "group" },
+  { id: "25", local_date: "06/18/2026 19:00", stadium_id: "2", home_team_name_en: "Mexico", away_team_name_en: "South Korea", home_score: "1", away_score: "0", group: "A", finished: "TRUE", time_elapsed: "finished", type: "group" },
+  { id: "26", local_date: "06/18/2026 12:00", stadium_id: "16", home_team_name_en: "Switzerland", away_team_name_en: "Bosnia and Herzegovina", home_score: "4", away_score: "1", group: "B", finished: "TRUE", time_elapsed: "finished", type: "group" },
+  { id: "27", local_date: "06/18/2026 15:00", stadium_id: "13", home_team_name_en: "Canada", away_team_name_en: "Qatar", home_score: "6", away_score: "0", group: "B", finished: "TRUE", time_elapsed: "finished", type: "group" },
+  { id: "28", local_date: "06/18/2026 12:00", stadium_id: "7", home_team_name_en: "Czech Republic", away_team_name_en: "South Africa", home_score: "1", away_score: "1", group: "A", finished: "TRUE", time_elapsed: "finished", type: "group" },
+  { id: "29", local_date: "06/19/2026 21:00", stadium_id: "10", home_team_name_en: "Brazil", away_team_name_en: "Haiti", home_score: "3", away_score: "0", group: "C", finished: "TRUE", time_elapsed: "finished", type: "group" },
+  { id: "30", local_date: "06/19/2026 18:00", stadium_id: "9", home_team_name_en: "Scotland", away_team_name_en: "Morocco", home_score: "0", away_score: "1", group: "C", finished: "TRUE", time_elapsed: "finished", type: "group" },
+  { id: "31", local_date: "06/19/2026 12:00", stadium_id: "14", home_team_name_en: "United States", away_team_name_en: "Australia", home_score: "2", away_score: "0", group: "D", finished: "TRUE", time_elapsed: "finished", type: "group" },
+  { id: "32", local_date: "06/19/2026 20:00", stadium_id: "15", home_team_name_en: "Turkey", away_team_name_en: "Paraguay", home_score: "0", away_score: "1", group: "D", finished: "TRUE", time_elapsed: "finished", type: "group" },
+  { id: "33", local_date: "06/20/2026 16:00", stadium_id: "12", home_team_name_en: "Germany", away_team_name_en: "Ivory Coast", home_score: "2", away_score: "1", group: "E", finished: "TRUE", time_elapsed: "finished", type: "group" },
+  { id: "34", local_date: "06/20/2026 19:00", stadium_id: "6", home_team_name_en: "Ecuador", away_team_name_en: "Curaçao", home_score: "0", away_score: "0", group: "E", finished: "TRUE", time_elapsed: "finished", type: "group" },
+  { id: "35", local_date: "06/20/2026 12:00", stadium_id: "5", home_team_name_en: "Netherlands", away_team_name_en: "Sweden", home_score: "5", away_score: "1", group: "F", finished: "TRUE", time_elapsed: "finished", type: "group" },
+  { id: "36", local_date: "06/20/2026 22:00", stadium_id: "3", home_team_name_en: "Tunisia", away_team_name_en: "Japan", home_score: "0", away_score: "4", group: "F", finished: "TRUE", time_elapsed: "finished", type: "group" },
+  { id: "37", local_date: "06/21/2026 12:00", stadium_id: "16", home_team_name_en: "Belgium", away_team_name_en: "Iran", home_score: "0", away_score: "0", group: "G", finished: "TRUE", time_elapsed: "finished", type: "group" },
+  { id: "38", local_date: "06/21/2026 18:00", stadium_id: "13", home_team_name_en: "New Zealand", away_team_name_en: "Egypt", home_score: "1", away_score: "3", group: "G", finished: "TRUE", time_elapsed: "finished", type: "group" },
+  { id: "39", local_date: "06/21/2026 12:00", stadium_id: "7", home_team_name_en: "Spain", away_team_name_en: "Saudi Arabia", home_score: "4", away_score: "0", group: "H", finished: "TRUE", time_elapsed: "finished", type: "group" },
+  { id: "40", local_date: "06/21/2026 18:00", stadium_id: "8", home_team_name_en: "Uruguay", away_team_name_en: "Cape Verde", home_score: "2", away_score: "2", group: "H", finished: "TRUE", time_elapsed: "finished", type: "group" },
+  { id: "41", local_date: "06/22/2026 17:00", stadium_id: "10", home_team_name_en: "France", away_team_name_en: "Iraq", home_score: "3", away_score: "0", group: "I", finished: "TRUE", time_elapsed: "finished", type: "group" },
+  { id: "42", local_date: "06/22/2026 20:00", stadium_id: "11", home_team_name_en: "Norway", away_team_name_en: "Senegal", home_score: "3", away_score: "2", group: "I", finished: "TRUE", time_elapsed: "finished", type: "group" },
+  { id: "43", local_date: "06/22/2026 12:00", stadium_id: "4", home_team_name_en: "Argentina", away_team_name_en: "Austria", home_score: "2", away_score: "0", group: "J", finished: "TRUE", time_elapsed: "finished", type: "group" },
+  { id: "44", local_date: "06/22/2026 20:00", stadium_id: "15", home_team_name_en: "Jordan", away_team_name_en: "Algeria", home_score: "1", away_score: "2", group: "J", finished: "TRUE", time_elapsed: "finished", type: "group" },
   { id: "45", local_date: "06/23/2026 12:00", stadium_id: "5", home_team_name_en: "Portugal", away_team_name_en: "Uzbekistan", group: "K", finished: "FALSE", type: "group" },
   { id: "46", local_date: "06/23/2026 19:00", stadium_id: "12", home_team_name_en: "Panama", away_team_name_en: "Croatia", group: "L", finished: "FALSE", type: "group" },
   { id: "47", local_date: "06/23/2026 20:00", stadium_id: "2", home_team_name_en: "Colombia", away_team_name_en: "Democratic Republic of the Congo", group: "K", finished: "FALSE", type: "group" },
@@ -888,7 +932,7 @@ function applyOfficialScheduleSnapshotIfNeeded() {
   state.liveMeta = {
     ...state.liveMeta,
     scheduleFormatVersion: LIVE_SCHEDULE_FORMAT_VERSION,
-    scheduleSource: "bundled WorldCup26 upcoming snapshot",
+    scheduleSource: "bundled WorldCup26 schedule snapshot",
     lastScheduleCount: snapshotMatches.length,
   };
   persistLiveMeta();
