@@ -332,6 +332,7 @@ const state = {
   isSyncingOdds: false,
   supabase: null,
   authSession: null,
+  authExpiryTimer: null,
   authStatus: "未连接 Supabase",
   authNotice: "",
   predictionNotice: "",
@@ -778,16 +779,21 @@ async function connectSupabase() {
 
     const { data, error } = await state.supabase.auth.getSession();
     if (error) throw error;
-    state.authSession = data.session;
-    if (data.session) await saveUserProfile();
-    state.authStatus = data.session ? `已进入：${getCurrentDisplayName()}` : "Supabase 已连接";
-    state.authNotice = "";
+    const hasActiveSession = setAuthSession(data.session);
+    if (hasActiveSession) await saveUserProfile();
+    state.authStatus = hasActiveSession ? `已进入：${getCurrentDisplayName()}` : "Supabase 已连接";
+    state.authNotice = data.expired ? "登录已过期，请重新登录。" : "";
 
     if (state.authSubscription) state.authSubscription.unsubscribe();
-    const { data: listener } = state.supabase.auth.onAuthStateChange((_event, session) => {
-      state.authSession = session;
-      state.authStatus = session ? `已进入：${getCurrentDisplayName()}` : "Supabase 已连接";
-      state.authNotice = "";
+    const { data: listener } = state.supabase.auth.onAuthStateChange((event, session) => {
+      const active = setAuthSession(session);
+      state.authStatus = active ? `已进入：${getCurrentDisplayName()}` : "Supabase 已连接";
+      state.authNotice = event === "TOKEN_EXPIRED" ? "登录已过期，请重新登录。" : "";
+      if (!active) {
+        state.myPredictions = [];
+        state.publicPredictions = [];
+        resetAdminState();
+      }
       loadPredictions();
     });
     state.authSubscription = listener.subscription;
@@ -825,9 +831,9 @@ async function registerWithUsername() {
   if (error) {
     state.authNotice = error.message;
   } else {
-    state.authSession = data.session;
-    if (data.session) await saveUserProfile(credentials.username);
-    state.authNotice = data.session
+    const active = setAuthSession(data.session);
+    if (active) await saveUserProfile(credentials.username);
+    state.authNotice = active
       ? `注册成功：${credentials.username}`
       : "注册成功，但 Supabase 仍要求确认账号。请在 Auth 设置里关闭邮箱确认。";
   }
@@ -854,8 +860,8 @@ async function loginWithUsername() {
   if (error) {
     state.authNotice = error.message;
   } else {
-    state.authSession = data.session;
-    if (data.session) await saveUserProfile(credentials.username);
+    const active = setAuthSession(data.session);
+    if (active) await saveUserProfile(credentials.username);
     state.authNotice = `登录成功：${getCurrentDisplayName()}`;
   }
   await loadPredictions();
@@ -869,17 +875,79 @@ async function signOut() {
   const { error } = await state.supabase.auth.signOut();
   state.isAuthBusy = false;
   if (error) state.authNotice = error.message;
-  state.authSession = null;
+  setAuthSession(null);
   state.myPredictions = [];
+  state.publicPredictions = [];
   resetAdminState();
   state.authNotice = error ? state.authNotice : "已退出。";
   await loadPredictions();
+}
+
+function setAuthSession(session) {
+  clearAuthExpiryTimer();
+  if (session && isSessionExpired(session)) {
+    state.authSession = null;
+    return false;
+  }
+  state.authSession = session || null;
+  if (state.authSession) scheduleAuthExpiry(state.authSession);
+  return Boolean(state.authSession);
+}
+
+function scheduleAuthExpiry(session) {
+  const expiresAt = Number(session?.expires_at);
+  if (!Number.isFinite(expiresAt) || expiresAt <= 0) return;
+  const delayMs = expiresAt * 1000 - Date.now();
+  if (delayMs <= 0) {
+    expireAuthSession();
+    return;
+  }
+  state.authExpiryTimer = setTimeout(() => {
+    expireAuthSession();
+  }, Math.min(delayMs, 2147483647));
+}
+
+function clearAuthExpiryTimer() {
+  if (!state.authExpiryTimer) return;
+  clearTimeout(state.authExpiryTimer);
+  state.authExpiryTimer = null;
+}
+
+async function expireAuthSession(message = "登录已过期，请重新登录。") {
+  clearAuthExpiryTimer();
+  if (state.supabase?.auth?.clearSession) {
+    await state.supabase.auth.clearSession("TOKEN_EXPIRED");
+  }
+  state.authSession = null;
+  state.myPredictions = [];
+  state.publicPredictions = [];
+  resetAdminState();
+  state.isAuthBusy = false;
+  state.authStatus = state.supabase ? "Supabase 已连接" : state.authStatus;
+  state.authNotice = message;
+  state.predictionNotice = "";
+  render();
+}
+
+function isSessionExpired(session) {
+  const expiresAt = Number(session?.expires_at);
+  return Number.isFinite(expiresAt) && expiresAt > 0 && expiresAt * 1000 <= Date.now();
+}
+
+function isAuthExpiredError(error) {
+  return /jwt.*expired|expired.*jwt|invalid.*jwt|token.*expired|session.*expired|PGRST301/i.test(
+    `${error?.message || ""} ${error?.details || ""} ${error?.hint || ""}`,
+  );
 }
 
 async function submitPrediction(match) {
   if (!state.supabase || !state.authSession?.user) {
     state.predictionNotice = "请先登录后再提交预测。";
     render();
+    return;
+  }
+  if (isSessionExpired(state.authSession)) {
+    await expireAuthSession();
     return;
   }
   if (!isMatchPredictable(match)) {
@@ -916,6 +984,10 @@ async function submitPrediction(match) {
     }
   }
 
+  if (isAuthExpiredError(error)) {
+    await expireAuthSession();
+    return;
+  }
   if (error) {
     state.predictionNotice = `预测提交失败：${error.message}`;
     render();
@@ -1032,6 +1104,10 @@ async function saveUserProfile(username = getCurrentDisplayName()) {
       { onConflict: "user_id" },
     );
 
+  if (isAuthExpiredError(error)) {
+    await expireAuthSession();
+    return;
+  }
   if (error && !/user_profiles|schema cache|relation/i.test(error.message || "")) {
     state.authNotice = `用户名保存失败：${error.message}`;
   }
@@ -1072,6 +1148,10 @@ async function loadPredictions() {
     render();
     return;
   }
+  if (state.authSession && isSessionExpired(state.authSession)) {
+    await expireAuthSession();
+    return;
+  }
   state.isLoadingPredictions = true;
   renderAuthStatus();
   const user = state.authSession?.user;
@@ -1097,6 +1177,11 @@ async function loadPredictions() {
   const [publicResult, myResult] = await Promise.all([publicQuery, myQuery]);
   state.isLoadingPredictions = false;
 
+  if (isAuthExpiredError(publicResult.error) || isAuthExpiredError(myResult.error)) {
+    await expireAuthSession();
+    return;
+  }
+
   if (publicResult.error || myResult.error) {
     state.authNotice = `读取预测失败：${publicResult.error?.message || myResult.error?.message}`;
   } else {
@@ -1117,6 +1202,10 @@ async function loadAdminData(options = {}) {
   if (options.force) renderAdminPanel();
 
   const adminResult = await state.supabase.rpc("is_admin");
+  if (isAuthExpiredError(adminResult.error)) {
+    await expireAuthSession();
+    return;
+  }
   if (adminResult.error || !adminResult.data) {
     resetAdminState();
     return;
@@ -1124,6 +1213,10 @@ async function loadAdminData(options = {}) {
 
   state.isAdmin = true;
   const usersResult = await state.supabase.rpc("admin_list_users");
+  if (isAuthExpiredError(usersResult.error)) {
+    await expireAuthSession();
+    return;
+  }
   if (usersResult.error) {
     state.adminNotice = `读取用户失败：${usersResult.error.message}`;
     state.adminUsers = [];
@@ -1154,6 +1247,10 @@ async function loadAdminUserPredictions(userId) {
     return;
   }
   const result = await state.supabase.rpc("admin_list_user_predictions", { target_user_id: userId });
+  if (isAuthExpiredError(result.error)) {
+    await expireAuthSession();
+    return;
+  }
   if (result.error) {
     state.adminNotice = `读取预测记录失败：${result.error.message}`;
     state.adminPredictions = [];
@@ -1208,6 +1305,10 @@ async function deleteAdminUserPredictions(userId) {
   renderAdminPanel();
 
   const result = await state.supabase.rpc("admin_delete_user_predictions", { target_user_id: userId });
+  if (isAuthExpiredError(result.error)) {
+    await expireAuthSession();
+    return;
+  }
   if (result.error) {
     state.adminNotice = `清空失败：${result.error.message}`;
     state.isLoadingAdmin = false;
@@ -1237,6 +1338,10 @@ async function deleteAdminUser(userId) {
   renderAdminPanel();
 
   const result = await state.supabase.rpc("admin_delete_user", { target_user_id: userId });
+  if (isAuthExpiredError(result.error)) {
+    await expireAuthSession();
+    return;
+  }
   if (result.error) {
     state.adminNotice = `删除用户失败：${result.error.message}`;
     state.isLoadingAdmin = false;
@@ -1254,11 +1359,19 @@ function createSupabaseRestClient(projectUrl, apiKey) {
   const baseUrl = projectUrl.replace(/\/+$/, "");
   const sessionKey = `${SUPABASE_SESSION_STORAGE}:${baseUrl}`;
   const listeners = new Set();
+  let expiredSessionDetected = false;
 
   const getStoredSession = () => {
     try {
       const stored = localStorage.getItem(sessionKey);
-      return stored ? JSON.parse(stored) : null;
+      const session = stored ? JSON.parse(stored) : null;
+      if (isSessionExpired(session)) {
+        expiredSessionDetected = true;
+        localStorage.removeItem(sessionKey);
+        notify("TOKEN_EXPIRED", null);
+        return null;
+      }
+      return session;
     } catch {
       return null;
     }
@@ -1296,7 +1409,10 @@ function createSupabaseRestClient(projectUrl, apiKey) {
   return {
     auth: {
       async getSession() {
-        return { data: { session: getStoredSession() }, error: null };
+        const session = getStoredSession();
+        const expired = expiredSessionDetected;
+        expiredSessionDetected = false;
+        return { data: { session, expired }, error: null };
       },
       onAuthStateChange(callback) {
         listeners.add(callback);
@@ -1341,6 +1457,10 @@ function createSupabaseRestClient(projectUrl, apiKey) {
           // A local sign-out is still valid when the remote token is already expired.
         }
         saveSession(null, "SIGNED_OUT");
+        return { error: null };
+      },
+      async clearSession(event = "SIGNED_OUT") {
+        saveSession(null, event);
         return { error: null };
       },
     },
