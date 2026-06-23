@@ -364,6 +364,7 @@ const els = {
   registerButton: document.getElementById("registerButton"),
   signOutButton: document.getElementById("signOutButton"),
   refreshPredictionsButton: document.getElementById("refreshPredictionsButton"),
+  leaderboardList: document.getElementById("leaderboardList"),
   myPredictionsList: document.getElementById("myPredictionsList"),
   publicPredictionsList: document.getElementById("publicPredictionsList"),
   addMatchButton: document.getElementById("addMatchButton"),
@@ -1038,7 +1039,7 @@ async function loadPredictions() {
     .select("*")
     .eq("is_public", true)
     .order("created_at", { ascending: false })
-    .limit(80);
+    .limit(500);
 
   const myQuery = state.authSession?.user
     ? state.supabase
@@ -1046,7 +1047,7 @@ async function loadPredictions() {
         .select("*")
         .eq("user_id", state.authSession.user.id)
         .order("created_at", { ascending: false })
-        .limit(80)
+        .limit(500)
     : Promise.resolve({ data: [], error: null });
 
   const [publicResult, myResult] = await Promise.all([publicQuery, myQuery]);
@@ -1761,6 +1762,7 @@ function renderScoreGrid(probability) {
 }
 
 function renderPredictionLists() {
+  if (els.leaderboardList) els.leaderboardList.innerHTML = renderLeaderboard();
   els.myPredictionsList.innerHTML = renderPredictionList({
     predictions: state.myPredictions,
     emptyText: state.authSession?.user ? "还没有预测记录" : "登录后查看自己的历史预测",
@@ -1771,6 +1773,122 @@ function renderPredictionLists() {
     emptyText: state.supabase ? "暂无公开预测" : "连接 Supabase 后查看公开预测",
     showOwner: true,
   });
+}
+
+function renderLeaderboard() {
+  if (state.isLoadingPredictions) return `<div class="empty-list compact-empty">正在加载排行榜...</div>`;
+  if (!state.supabase) return `<div class="empty-list compact-empty">连接 Supabase 后查看排行榜</div>`;
+
+  const rows = buildLeaderboardRows();
+  if (!rows.length) return `<div class="empty-list compact-empty">暂无已结算的公开预测</div>`;
+
+  return rows.map(renderLeaderboardRow).join("");
+}
+
+function buildLeaderboardRows() {
+  const users = new Map();
+  getUniquePredictions(state.publicPredictions)
+    .filter((prediction) => prediction.is_public)
+    .forEach((prediction) => {
+      const assessment = assessPrediction(prediction);
+      if (!assessment) return;
+
+      const userId = prediction.user_id || getPredictionDisplayName(prediction);
+      if (!users.has(userId)) {
+        users.set(userId, {
+          userId,
+          displayName: getPredictionDisplayName(prediction),
+          correct: 0,
+          total: 0,
+          latestAt: "",
+        });
+      }
+
+      const row = users.get(userId);
+      row.correct += assessment.correct ? 1 : 0;
+      row.total += 1;
+      row.latestAt = maxDateString(row.latestAt, prediction.created_at);
+      const displayName = getPredictionDisplayName(prediction);
+      if (displayName && !isFallbackUserName(displayName)) row.displayName = displayName;
+    });
+
+  return [...users.values()]
+    .filter((row) => row.total > 0)
+    .map((row) => ({
+      ...row,
+      accuracy: row.correct / row.total,
+    }))
+    .sort((a, b) =>
+      b.accuracy - a.accuracy ||
+      b.correct - a.correct ||
+      b.total - a.total ||
+      new Date(b.latestAt) - new Date(a.latestAt),
+    )
+    .slice(0, 20);
+}
+
+function renderLeaderboardRow(row, index) {
+  return `
+    <article class="leaderboard-row">
+      <span class="leaderboard-rank">#${index + 1}</span>
+      <strong>${escapeHtml(row.displayName)}</strong>
+      <span class="leaderboard-accuracy">${formatPercent(row.accuracy)}</span>
+      <span class="leaderboard-record">命中 ${row.correct}/${row.total}</span>
+    </article>
+  `;
+}
+
+function getUniquePredictions(predictions) {
+  const map = new Map();
+  predictions.forEach((prediction) => {
+    const key = prediction.id || `${prediction.user_id || ""}:${prediction.match_id || ""}`;
+    if (!map.has(key)) map.set(key, prediction);
+  });
+  return [...map.values()];
+}
+
+function assessPrediction(prediction) {
+  const match = findMatchById(prediction.match_id);
+  const result = getFinalResultForLeaderboard(match);
+  if (!result) return null;
+  return { correct: isPredictionCorrect(prediction, result) };
+}
+
+function findMatchById(matchId) {
+  return state.matches.find((match) => match.id === matchId);
+}
+
+function getFinalResultForLeaderboard(match) {
+  if (!match || !hasResult(match) || match.liveStatus === "LIVE") return null;
+  const result = getVisibleResult(match);
+  if (!result) return null;
+  return {
+    home: Number(result.home),
+    away: Number(result.away),
+  };
+}
+
+function isPredictionCorrect(prediction, result) {
+  if (prediction.prediction_type === "score") {
+    return Number(prediction.home_score) === result.home && Number(prediction.away_score) === result.away;
+  }
+  return prediction.outcome === getOutcomeFromResult(result);
+}
+
+function getOutcomeFromResult(result) {
+  if (result.home > result.away) return "home";
+  if (result.home < result.away) return "away";
+  return "draw";
+}
+
+function maxDateString(a, b) {
+  if (!a) return b || "";
+  if (!b) return a;
+  return new Date(a) > new Date(b) ? a : b;
+}
+
+function isFallbackUserName(value) {
+  return cleanText(value).startsWith("用户 ");
 }
 
 function renderPredictionList({ predictions, emptyText, showOwner }) {

@@ -768,6 +768,49 @@ h1 {
   background: var(--panel);
 }
 
+.leaderboard-panel {
+  grid-column: 1 / -1;
+}
+
+.leaderboard-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.leaderboard-row {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fbfcfd;
+}
+
+.leaderboard-row strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.leaderboard-rank {
+  color: var(--accent);
+  font-weight: 950;
+}
+
+.leaderboard-accuracy {
+  font-size: 1.05rem;
+  font-weight: 950;
+}
+
+.leaderboard-record {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 850;
+}
+
 .prediction-list {
   display: grid;
   gap: 10px;
@@ -1083,6 +1126,16 @@ h1 {
   .prob-row,
   .score-pill {
     grid-template-columns: 58px minmax(90px, 1fr) 54px;
+  }
+
+  .leaderboard-row {
+    grid-template-columns: 44px minmax(0, 1fr);
+  }
+
+  .leaderboard-accuracy,
+  .leaderboard-record {
+    grid-column: 2;
+    justify-self: start;
   }
 
   .editor-head {

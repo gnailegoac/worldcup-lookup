@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>世界杯比分概率查询</title>
-    <link rel="stylesheet" href="styles.css?v=20260623-prediction-layout" />
+    <link rel="stylesheet" href="styles.css?v=20260623-leaderboard" />
   </head>
   <body>
     <main class="app-shell">
@@ -80,6 +80,12 @@
       </section>
 
       <section class="predictions-area" aria-label="用户预测">
+        <section class="prediction-list-panel leaderboard-panel">
+          <div class="prediction-list-head">
+            <h2 class="section-title">预测排行榜</h2>
+          </div>
+          <div id="leaderboardList" class="leaderboard-list"></div>
+        </section>
         <section class="prediction-list-panel">
           <div class="prediction-list-head">
             <h2 class="section-title">我的历史预测</h2>
@@ -96,7 +102,7 @@
       </section>
     </main>
 
-    <script src="supabase-config.js?v=20260623-prediction-layout"></script>
-    <script src="app.js?v=20260623-prediction-layout" defer></script>
+    <script src="supabase-config.js?v=20260623-leaderboard"></script>
+    <script src="app.js?v=20260623-leaderboard" defer></script>
   </body>
 </html>
