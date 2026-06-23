@@ -779,6 +779,7 @@ async function connectSupabase() {
     const { data, error } = await state.supabase.auth.getSession();
     if (error) throw error;
     state.authSession = data.session;
+    if (data.session) await saveUserProfile();
     state.authStatus = data.session ? `已进入：${getCurrentDisplayName()}` : "Supabase 已连接";
     state.authNotice = "";
 
@@ -825,6 +826,7 @@ async function registerWithUsername() {
     state.authNotice = error.message;
   } else {
     state.authSession = data.session;
+    if (data.session) await saveUserProfile(credentials.username);
     state.authNotice = data.session
       ? `注册成功：${credentials.username}`
       : "注册成功，但 Supabase 仍要求确认账号。请在 Auth 设置里关闭邮箱确认。";
@@ -853,6 +855,7 @@ async function loginWithUsername() {
     state.authNotice = error.message;
   } else {
     state.authSession = data.session;
+    if (data.session) await saveUserProfile(credentials.username);
     state.authNotice = `登录成功：${getCurrentDisplayName()}`;
   }
   await loadPredictions();
@@ -895,6 +898,7 @@ async function submitPrediction(match) {
 
   state.predictionNotice = "正在保存预测...";
   renderDetail(match);
+  await saveUserProfile(payload.display_name);
   let { error } = await state.supabase
     .from("predictions")
     .upsert(payload, { onConflict: "user_id,match_id" });
@@ -1011,6 +1015,26 @@ function stripPredictionProbabilitySnapshot(payload) {
 function isPredictionProbabilitySchemaError(error) {
   const text = `${error?.message || ""} ${error?.details || ""} ${error?.hint || ""}`;
   return /model_probability|model_probability_label|model_snapshot_at/i.test(text);
+}
+
+async function saveUserProfile(username = getCurrentDisplayName()) {
+  if (!state.supabase || !state.authSession?.user) return;
+  const cleanUsername = cleanText(username);
+  if (!cleanUsername || isInternalAuthEmail(cleanUsername)) return;
+
+  const { error } = await state.supabase
+    .from("user_profiles")
+    .upsert(
+      {
+        user_id: state.authSession.user.id,
+        username: cleanUsername,
+      },
+      { onConflict: "user_id" },
+    );
+
+  if (error && !/user_profiles|schema cache|relation/i.test(error.message || "")) {
+    state.authNotice = `用户名保存失败：${error.message}`;
+  }
 }
 
 function readUsernamePassword() {

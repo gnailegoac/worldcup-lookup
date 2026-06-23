@@ -101,6 +101,82 @@ create trigger predictions_set_updated_at
   for each row
   execute function public.set_updated_at();
 
+create table if not exists public.user_profiles (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  username text not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint user_profiles_username_check check (char_length(trim(username)) between 1 and 64)
+);
+
+alter table public.user_profiles enable row level security;
+
+drop policy if exists "Users can read own profile" on public.user_profiles;
+create policy "Users can read own profile"
+  on public.user_profiles
+  for select
+  to authenticated
+  using (auth.uid() = user_id);
+
+drop policy if exists "Users can insert own profile" on public.user_profiles;
+create policy "Users can insert own profile"
+  on public.user_profiles
+  for insert
+  to authenticated
+  with check (auth.uid() = user_id);
+
+drop policy if exists "Users can update own profile" on public.user_profiles;
+create policy "Users can update own profile"
+  on public.user_profiles
+  for update
+  to authenticated
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+
+drop trigger if exists user_profiles_set_updated_at on public.user_profiles;
+create trigger user_profiles_set_updated_at
+  before update on public.user_profiles
+  for each row
+  execute function public.set_updated_at();
+
+insert into public.user_profiles (user_id, username)
+select
+  users.id,
+  coalesce(
+    nullif(users.raw_user_meta_data ->> 'display_name', ''),
+    nullif(users.raw_user_meta_data ->> 'username', '')
+  ) as username
+from auth.users users
+where users.email like '%@users.worldcup-lookup.app'
+  and coalesce(
+    nullif(users.raw_user_meta_data ->> 'display_name', ''),
+    nullif(users.raw_user_meta_data ->> 'username', '')
+  ) is not null
+on conflict (user_id) do nothing;
+
+insert into public.user_profiles (user_id, username)
+select
+  predictions.user_id,
+  max(nullif(predictions.display_name, '')) as username
+from public.predictions predictions
+where predictions.display_name is not null
+  and nullif(predictions.display_name, '') is not null
+  and predictions.display_name not ilike '%@users.worldcup-lookup.app'
+group by predictions.user_id
+on conflict (user_id) do nothing;
+
+insert into public.user_profiles (user_id, username)
+select users.id, seed_profiles.username
+from (
+  values
+    ('00f003bb-b3e1-4e4f-a1a7-8d767e534604'::uuid, 'wc-admin-7kq4'),
+    ('d06f7d2e-e954-4a57-b2c3-d2464ac2b071'::uuid, '艹公公')
+) as seed_profiles(user_id, username)
+join auth.users users on users.id = seed_profiles.user_id
+on conflict (user_id) do update
+set username = excluded.username,
+    updated_at = now();
+
 create table if not exists public.admin_users (
   user_id uuid primary key references auth.users(id) on delete cascade,
   created_at timestamptz not null default now()
@@ -153,6 +229,7 @@ begin
   select
     users.id,
     coalesce(
+      nullif(profiles.username, ''),
       nullif(users.raw_user_meta_data ->> 'display_name', ''),
       nullif(users.raw_user_meta_data ->> 'username', ''),
       nullif(max(nullif(predictions.display_name, '')) filter (
@@ -167,9 +244,10 @@ begin
     count(predictions.id) filter (where not predictions.is_public) as private_prediction_count,
     max(predictions.created_at) as latest_prediction_at
   from auth.users users
+  left join public.user_profiles profiles on profiles.user_id = users.id
   left join public.predictions predictions on predictions.user_id = users.id
   where users.email like '%@users.worldcup-lookup.app'
-  group by users.id, users.raw_user_meta_data, users.created_at, users.last_sign_in_at
+  group by users.id, profiles.username, users.raw_user_meta_data, users.created_at, users.last_sign_in_at
   order by count(predictions.id) desc, max(predictions.created_at) desc nulls last, users.created_at desc;
 end;
 $$;
