@@ -852,6 +852,116 @@ h1 {
   font-weight: 850;
 }
 
+.admin-panel {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.admin-panel[hidden] {
+  display: none;
+}
+
+.admin-notice {
+  border-left: 3px solid var(--accent);
+  padding: 8px 10px;
+  background: #e9f7f4;
+  color: #0f4f49;
+  font-size: 0.82rem;
+  font-weight: 850;
+}
+
+.admin-notice[hidden] {
+  display: none;
+}
+
+.admin-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.45fr) minmax(0, 1fr);
+  gap: 14px;
+}
+
+.admin-column {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-width: 0;
+}
+
+.admin-column h3 {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.admin-users-list {
+  display: grid;
+  gap: 8px;
+}
+
+.admin-user-card {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 10px;
+  background: #fbfcfd;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.admin-user-card:hover,
+.admin-user-card:focus-visible,
+.admin-user-card.is-selected {
+  border-color: var(--accent);
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.1);
+}
+
+.admin-user-card strong {
+  overflow-wrap: anywhere;
+}
+
+.admin-user-card span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.admin-user-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fbfcfd;
+}
+
+.admin-user-summary div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.admin-user-summary strong {
+  overflow-wrap: anywhere;
+}
+
+.admin-user-summary span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
 .compact-empty {
   min-height: 120px;
 }
@@ -1084,7 +1194,8 @@ h1 {
   }
 
   .workspace,
-  .detail-body {
+  .detail-body,
+  .admin-grid {
     grid-template-columns: 1fr;
   }
 
@@ -1136,6 +1247,11 @@ h1 {
   .leaderboard-record {
     grid-column: 2;
     justify-self: start;
+  }
+
+  .admin-user-summary {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .editor-head {

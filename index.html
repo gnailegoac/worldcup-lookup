@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>世界杯比分概率查询</title>
-    <link rel="stylesheet" href="styles.css?v=20260623-leaderboard" />
+    <link rel="stylesheet" href="styles.css?v=20260623-admin" />
   </head>
   <body>
     <main class="app-shell">
@@ -100,9 +100,27 @@
           <div id="publicPredictionsList" class="prediction-list"></div>
         </section>
       </section>
+
+      <section class="admin-panel" id="adminPanel" hidden aria-label="管理员">
+        <div class="prediction-list-head">
+          <h2 class="section-title">管理员</h2>
+          <button class="icon-button small" id="refreshAdminButton" type="button" aria-label="刷新管理员数据" title="刷新管理员数据">↻</button>
+        </div>
+        <div id="adminNotice" class="admin-notice"></div>
+        <div class="admin-grid">
+          <section class="admin-column">
+            <h3>用户</h3>
+            <div id="adminUsersList" class="admin-users-list"></div>
+          </section>
+          <section class="admin-column">
+            <h3>预测记录</h3>
+            <div id="adminPredictionsList" class="prediction-list"></div>
+          </section>
+        </div>
+      </section>
     </main>
 
-    <script src="supabase-config.js?v=20260623-leaderboard"></script>
-    <script src="app.js?v=20260623-leaderboard" defer></script>
+    <script src="supabase-config.js?v=20260623-admin"></script>
+    <script src="app.js?v=20260623-admin" defer></script>
   </body>
 </html>

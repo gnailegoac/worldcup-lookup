@@ -339,6 +339,12 @@ const state = {
   publicPredictions: [],
   isLoadingPredictions: false,
   isAuthBusy: false,
+  isAdmin: false,
+  isLoadingAdmin: false,
+  adminUsers: [],
+  adminPredictions: [],
+  selectedAdminUserId: "",
+  adminNotice: "",
 };
 
 const els = {
@@ -367,6 +373,11 @@ const els = {
   leaderboardList: document.getElementById("leaderboardList"),
   myPredictionsList: document.getElementById("myPredictionsList"),
   publicPredictionsList: document.getElementById("publicPredictionsList"),
+  adminPanel: document.getElementById("adminPanel"),
+  adminUsersList: document.getElementById("adminUsersList"),
+  adminPredictionsList: document.getElementById("adminPredictionsList"),
+  adminNotice: document.getElementById("adminNotice"),
+  refreshAdminButton: document.getElementById("refreshAdminButton"),
   addMatchButton: document.getElementById("addMatchButton"),
   importButton: document.getElementById("importButton"),
   exportButton: document.getElementById("exportButton"),
@@ -477,6 +488,8 @@ function bindEvents() {
   });
   els.signOutButton.addEventListener("click", signOut);
   els.refreshPredictionsButton.addEventListener("click", loadPredictions);
+  if (els.refreshAdminButton) els.refreshAdminButton.addEventListener("click", () => loadAdminData({ force: true }));
+  if (els.adminPanel) els.adminPanel.addEventListener("click", handleAdminAction);
   if (SHOW_ADMIN_TOOLS) {
     els.addMatchButton.addEventListener("click", addMatch);
     els.importButton.addEventListener("click", () => els.importFile.click());
@@ -500,6 +513,7 @@ function render() {
   renderList();
   renderDetail(getSelectedMatch());
   renderPredictionLists();
+  renderAdminPanel();
 }
 
 function renderTabs() {
@@ -540,6 +554,7 @@ function renderAuthStatus() {
   els.loginButton.disabled = Boolean(user) || state.isAuthBusy || !state.supabase;
   els.registerButton.disabled = Boolean(user) || state.isAuthBusy || !state.supabase;
   els.refreshPredictionsButton.disabled = !state.supabase || state.isLoadingPredictions;
+  if (els.refreshAdminButton) els.refreshAdminButton.disabled = !state.isAdmin || state.isLoadingAdmin;
   els.loginButton.textContent = state.isAuthBusy ? "处理中..." : "登录";
   els.registerButton.textContent = state.isAuthBusy ? "处理中..." : "注册";
 }
@@ -853,6 +868,7 @@ async function signOut() {
   if (error) state.authNotice = error.message;
   state.authSession = null;
   state.myPredictions = [];
+  resetAdminState();
   state.authNotice = error ? state.authNotice : "已退出。";
   await loadPredictions();
 }
@@ -1028,6 +1044,7 @@ async function loadPredictions() {
   if (!state.supabase) {
     state.myPredictions = [];
     state.publicPredictions = [];
+    resetAdminState();
     render();
     return;
   }
@@ -1059,7 +1076,114 @@ async function loadPredictions() {
     state.publicPredictions = publicResult.data || [];
     state.myPredictions = myResult.data || [];
   }
+  await loadAdminData();
   render();
+}
+
+async function loadAdminData(options = {}) {
+  if (!state.supabase?.rpc || !state.authSession?.user) {
+    resetAdminState();
+    return;
+  }
+
+  state.isLoadingAdmin = true;
+  if (options.force) renderAdminPanel();
+
+  const adminResult = await state.supabase.rpc("is_admin");
+  if (adminResult.error || !adminResult.data) {
+    resetAdminState();
+    return;
+  }
+
+  state.isAdmin = true;
+  const usersResult = await state.supabase.rpc("admin_list_users");
+  if (usersResult.error) {
+    state.adminNotice = `读取用户失败：${usersResult.error.message}`;
+    state.adminUsers = [];
+    state.adminPredictions = [];
+    state.isLoadingAdmin = false;
+    renderAdminPanel();
+    return;
+  }
+
+  state.adminUsers = usersResult.data || [];
+  if (!state.adminUsers.some((user) => user.user_id === state.selectedAdminUserId)) {
+    state.selectedAdminUserId = state.adminUsers[0]?.user_id || "";
+  }
+
+  if (state.selectedAdminUserId) {
+    await loadAdminUserPredictions(state.selectedAdminUserId);
+  } else {
+    state.adminPredictions = [];
+  }
+
+  state.isLoadingAdmin = false;
+  renderAdminPanel();
+}
+
+async function loadAdminUserPredictions(userId) {
+  if (!state.supabase?.rpc || !state.isAdmin || !userId) {
+    state.adminPredictions = [];
+    return;
+  }
+  const result = await state.supabase.rpc("admin_list_user_predictions", { target_user_id: userId });
+  if (result.error) {
+    state.adminNotice = `读取预测记录失败：${result.error.message}`;
+    state.adminPredictions = [];
+    return;
+  }
+  state.adminPredictions = result.data || [];
+}
+
+function resetAdminState() {
+  state.isAdmin = false;
+  state.isLoadingAdmin = false;
+  state.adminUsers = [];
+  state.adminPredictions = [];
+  state.selectedAdminUserId = "";
+  state.adminNotice = "";
+}
+
+async function handleAdminAction(event) {
+  const actionButton = event.target.closest("[data-action='admin-delete-user-predictions']");
+  if (actionButton) {
+    await deleteAdminUserPredictions(actionButton.dataset.adminUserId);
+    return;
+  }
+
+  const userButton = event.target.closest("[data-admin-user-id]");
+  if (userButton) {
+    state.selectedAdminUserId = userButton.dataset.adminUserId;
+    state.isLoadingAdmin = true;
+    renderAdminPanel();
+    await loadAdminUserPredictions(state.selectedAdminUserId);
+    state.isLoadingAdmin = false;
+    renderAdminPanel();
+    return;
+  }
+}
+
+async function deleteAdminUserPredictions(userId) {
+  if (!state.supabase?.rpc || !state.isAdmin || !userId) return;
+  const user = state.adminUsers.find((item) => item.user_id === userId);
+  const name = user?.username || `用户 ${shortUserId(userId)}`;
+  const confirmed = window.confirm(`确认清空 ${name} 的所有预测记录？这个操作不能撤销。`);
+  if (!confirmed) return;
+
+  state.isLoadingAdmin = true;
+  state.adminNotice = `正在清空 ${name} 的预测记录...`;
+  renderAdminPanel();
+
+  const result = await state.supabase.rpc("admin_delete_user_predictions", { target_user_id: userId });
+  if (result.error) {
+    state.adminNotice = `清空失败：${result.error.message}`;
+    state.isLoadingAdmin = false;
+    renderAdminPanel();
+    return;
+  }
+
+  state.adminNotice = `已清空 ${name} 的 ${Number(result.data || 0)} 条预测记录。`;
+  await loadPredictions();
 }
 
 function createSupabaseRestClient(projectUrl, apiKey) {
@@ -1155,6 +1279,17 @@ function createSupabaseRestClient(projectUrl, apiKey) {
         saveSession(null, "SIGNED_OUT");
         return { error: null };
       },
+    },
+    async rpc(functionName, params = {}) {
+      try {
+        const payload = await request(`/rest/v1/rpc/${encodeURIComponent(functionName)}`, {
+          method: "POST",
+          body: JSON.stringify(params || {}),
+        });
+        return { data: payload, error: null };
+      } catch (error) {
+        return { data: null, error };
+      }
     },
     from(table) {
       return new SupabaseRestQuery(baseUrl, apiKey, table, getStoredSession);
@@ -1773,6 +1908,64 @@ function renderPredictionLists() {
     emptyText: state.supabase ? "暂无公开预测" : "连接 Supabase 后查看公开预测",
     showOwner: true,
   });
+}
+
+function renderAdminPanel() {
+  if (!els.adminPanel) return;
+  els.adminPanel.hidden = !state.isAdmin;
+  if (!state.isAdmin) return;
+
+  if (els.refreshAdminButton) els.refreshAdminButton.disabled = state.isLoadingAdmin;
+  if (els.adminNotice) {
+    els.adminNotice.hidden = !state.adminNotice;
+    els.adminNotice.textContent = state.adminNotice;
+  }
+  els.adminUsersList.innerHTML = renderAdminUsers();
+  els.adminPredictionsList.innerHTML = renderAdminPredictions();
+}
+
+function renderAdminUsers() {
+  if (state.isLoadingAdmin && !state.adminUsers.length) {
+    return `<div class="empty-list compact-empty">正在加载用户...</div>`;
+  }
+  if (!state.adminUsers.length) return `<div class="empty-list compact-empty">暂无用户</div>`;
+
+  return state.adminUsers.map((user) => {
+    const selected = user.user_id === state.selectedAdminUserId;
+    return `
+      <button class="admin-user-card ${selected ? "is-selected" : ""}" type="button" data-admin-user-id="${escapeHtml(user.user_id)}">
+        <strong>${escapeHtml(user.username || `用户 ${shortUserId(user.user_id)}`)}</strong>
+        <span>预测 ${Number(user.prediction_count || 0)} · 公开 ${Number(user.public_prediction_count || 0)} · 私密 ${Number(user.private_prediction_count || 0)}</span>
+        <span>最近 ${escapeHtml(formatDateFull(user.latest_prediction_at || user.auth_created_at))}</span>
+      </button>
+    `;
+  }).join("");
+}
+
+function renderAdminPredictions() {
+  if (state.isLoadingAdmin) return `<div class="empty-list compact-empty">正在加载预测记录...</div>`;
+  const user = getSelectedAdminUser();
+  if (!user) return `<div class="empty-list compact-empty">请选择一个用户</div>`;
+
+  const deleteDisabled = Number(user.prediction_count || 0) <= 0 ? "disabled" : "";
+  const records = state.adminPredictions.length
+    ? state.adminPredictions.map((prediction) => renderPredictionCard(prediction, false)).join("")
+    : `<div class="empty-list compact-empty">这个用户没有预测记录</div>`;
+
+  return `
+    <div class="admin-user-summary">
+      <div>
+        <strong>${escapeHtml(user.username || `用户 ${shortUserId(user.user_id)}`)}</strong>
+        <span>注册 ${escapeHtml(formatDateFull(user.auth_created_at))}</span>
+      </div>
+      <button type="button" class="action-button danger" data-action="admin-delete-user-predictions" data-admin-user-id="${escapeHtml(user.user_id)}" ${deleteDisabled}>清空预测</button>
+    </div>
+    ${records}
+  `;
+}
+
+function getSelectedAdminUser() {
+  return state.adminUsers.find((user) => user.user_id === state.selectedAdminUserId) || null;
 }
 
 function renderLeaderboard() {
