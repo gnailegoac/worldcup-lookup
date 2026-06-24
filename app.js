@@ -1425,7 +1425,6 @@ async function submitPrediction(match) {
 
 function buildPredictionPayload(match, formData) {
   const predictionType = cleanText(formData.get("predictionType"));
-  const isPublic = formData.get("isPublic") === "on";
   const base = {
     user_id: state.authSession.user.id,
     match_id: match.id,
@@ -1435,7 +1434,7 @@ function buildPredictionPayload(match, formData) {
     away_team: match.away,
     display_name: getCurrentDisplayName(),
     prediction_type: predictionType,
-    is_public: isPublic,
+    is_public: true,
     model_snapshot_at: new Date().toISOString(),
   };
 
@@ -2606,10 +2605,6 @@ function renderPredictionForm(match) {
           B队进球
           <input name="predictedAwayScore" type="number" min="0" max="20" step="1" value="1" ${disabledAttr} />
         </label>
-        <label class="public-toggle">
-          <input name="isPublic" type="checkbox" ${disabledAttr} />
-          公开
-        </label>
         <button type="button" class="action-button primary prediction-submit" data-action="submit-prediction" ${disabledAttr}>提交</button>
       </div>
     </form>
@@ -2690,9 +2685,9 @@ function renderPredictionLists() {
 }
 
 function getPublicPredictionsEmptyText() {
-  if (!state.supabase) return "连接 Supabase 后查看公开预测";
-  if (!state.authSession?.user) return "登录后查看公开预测";
-  return "暂无公开预测";
+  if (!state.supabase) return "连接 Supabase 后查看用户预测";
+  if (!state.authSession?.user) return "登录后查看用户预测";
+  return "暂无用户预测";
 }
 
 function renderAdminPanel() {
@@ -2720,7 +2715,7 @@ function renderAdminUsers() {
     return `
       <button class="admin-user-card ${selected ? "is-selected" : ""}" type="button" data-admin-user-id="${escapeHtml(user.user_id)}">
         <strong>${escapeHtml(user.username || `用户 ${shortUserId(user.user_id)}`)}</strong>
-        <span>预测 ${Number(user.prediction_count || 0)} · 公开 ${Number(user.public_prediction_count || 0)} · 私密 ${Number(user.private_prediction_count || 0)}</span>
+        <span>预测 ${Number(user.prediction_count || 0)}</span>
         <span>最近 ${escapeHtml(formatDateFull(user.latest_prediction_at || user.auth_created_at))}</span>
       </button>
     `;
@@ -2766,7 +2761,7 @@ function renderLeaderboard() {
 
   const rows = state.leaderboardRows;
   if (!rows.length) {
-    return `<div class="empty-list compact-empty">暂无已结算的公开预测。排行榜只统计公开预测；如果已有完赛公开预测，请用管理员账号刷新一次以同步赛果。</div>`;
+    return `<div class="empty-list compact-empty">暂无已结算的预测。如果已有完赛预测，请用管理员账号刷新一次以同步赛果。</div>`;
   }
 
   return rows.map(renderLeaderboardRow).join("");
@@ -2791,6 +2786,7 @@ function renderPredictionList({ predictions, emptyText, showOwner }) {
 
 function renderPredictionCard(prediction, showOwner) {
   const ownerName = getPredictionDisplayName(prediction);
+  const predictionMeta = formatPredictionMeta(prediction);
   return `
     <article class="prediction-card">
       <div class="prediction-card-head">
@@ -2799,7 +2795,7 @@ function renderPredictionCard(prediction, showOwner) {
       </div>
       <div class="prediction-card-body">
         <span>${escapeHtml(formatPrediction(prediction))}</span>
-        <span>${escapeHtml(formatPredictionMeta(prediction))}</span>
+        ${predictionMeta ? `<span>${escapeHtml(predictionMeta)}</span>` : ""}
       </div>
       <div class="prediction-card-foot">
         <span>${escapeHtml(formatDateFull(prediction.created_at))}</span>
@@ -2829,10 +2825,8 @@ function isScorePrediction(prediction) {
 }
 
 function formatPredictionMeta(prediction) {
-  const parts = [prediction.is_public ? "公开" : "私密"];
   const probability = formatStoredModelProbability(prediction);
-  if (probability) parts.push(`当时系统概率 ${probability}`);
-  return parts.join(" · ");
+  return probability ? `当时系统概率 ${probability}` : "";
 }
 
 function formatStoredModelProbability(prediction) {

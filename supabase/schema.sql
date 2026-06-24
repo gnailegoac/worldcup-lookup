@@ -16,7 +16,7 @@ create table if not exists public.predictions (
   model_probability numeric,
   model_probability_label text,
   model_snapshot_at timestamptz,
-  is_public boolean not null default false,
+  is_public boolean not null default true,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint predictions_model_probability_check check (
@@ -49,6 +49,20 @@ alter table public.predictions
   add constraint predictions_model_probability_check
   check (model_probability is null or (model_probability >= 0 and model_probability <= 1));
 
+alter table public.predictions
+  drop constraint if exists predictions_public_only_check;
+
+update public.predictions
+  set is_public = true
+  where is_public = false;
+
+alter table public.predictions
+  alter column is_public set default true;
+
+alter table public.predictions
+  add constraint predictions_public_only_check
+  check (is_public = true);
+
 create index if not exists predictions_user_created_idx
   on public.predictions (user_id, created_at desc);
 
@@ -69,7 +83,7 @@ create policy "Users can insert own predictions"
   on public.predictions
   for insert
   to authenticated
-  with check (auth.uid() = user_id);
+  with check (auth.uid() = user_id and is_public = true);
 
 drop policy if exists "Users can update own predictions" on public.predictions;
 create policy "Users can update own predictions"
@@ -77,7 +91,7 @@ create policy "Users can update own predictions"
   for update
   to authenticated
   using (auth.uid() = user_id)
-  with check (auth.uid() = user_id);
+  with check (auth.uid() = user_id and is_public = true);
 
 drop policy if exists "Users can delete own predictions" on public.predictions;
 create policy "Users can delete own predictions"

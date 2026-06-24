@@ -738,19 +738,6 @@ h1 {
   display: none;
 }
 
-.prediction-controls .public-toggle {
-  align-items: center;
-  display: flex;
-  gap: 6px;
-  justify-content: flex-start;
-  min-height: 36px;
-}
-
-.prediction-controls .public-toggle input {
-  width: auto;
-  min-height: auto;
-}
-
 .prediction-submit {
   min-width: 96px;
   width: fit-content;
