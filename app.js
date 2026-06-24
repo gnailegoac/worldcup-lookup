@@ -2202,6 +2202,8 @@ function renderDetail(match) {
   const statusClass = getStatusClass(timeline.key);
   const resultMarkup = result
     ? `<span class="result-pill">实际比分 ${result.home}-${result.away}</span>`
+    : timeline.key === "pending-result"
+      ? `<span class="result-pill">等待比分同步</span>`
     : `<span class="result-pill">赛前概率</span>`;
 
   els.matchDetail.innerHTML = `
@@ -2799,7 +2801,7 @@ function getTimelineStatus(match) {
     return { key: "final", label: "已完赛" };
   }
   if (kickoff < state.referenceAt) {
-    return { key: "history", label: "历史" };
+    return { key: "pending-result", label: "待同步" };
   }
   return { key: "upcoming", label: "未开赛" };
 }
@@ -2814,6 +2816,7 @@ function getVisibleResult(match) {
 function getStatusClass(key) {
   if (key === "final") return "final";
   if (key === "history") return "history";
+  if (key === "pending-result") return "pending";
   if (key === "live") return "live";
   return "";
 }

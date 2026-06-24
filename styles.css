@@ -377,6 +377,10 @@ h1 {
   background: var(--warn);
 }
 
+.status-badge.pending {
+  background: #b45309;
+}
+
 .status-badge.final {
   background: #374151;
 }
