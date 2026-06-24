@@ -1072,6 +1072,14 @@ function applyOfficialScheduleSnapshotIfNeeded() {
   const hasOfficialSchedule = state.matches.some((match) => String(match.id || "").startsWith("worldcup26-"));
   const hasOldSeedSchedule = state.matches.some((match) => SEED_MATCH_IDS.has(String(match.id || "")));
   if (hasCurrentFormat && hasOfficialSchedule && !hasOldSeedSchedule) return;
+  if (hasOfficialSchedule && !hasOldSeedSchedule) {
+    state.liveMeta = {
+      ...state.liveMeta,
+      scheduleFormatVersion: LIVE_SCHEDULE_FORMAT_VERSION,
+    };
+    persistLiveMeta();
+    return;
+  }
 
   const snapshotMatches = normalizeWorldCup26Payload(OFFICIAL_UPCOMING_SNAPSHOT);
   if (!snapshotMatches.length) return;
