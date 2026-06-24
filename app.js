@@ -2821,7 +2821,13 @@ function formatPrediction(prediction) {
 function isScorePrediction(prediction) {
   const type = cleanText(prediction.prediction_type).toLocaleLowerCase();
   if (type === "score") return true;
-  return Number.isFinite(Number(prediction.home_score)) && Number.isFinite(Number(prediction.away_score));
+  if (type === "outcome") return false;
+  return hasStoredScore(prediction.home_score) && hasStoredScore(prediction.away_score);
+}
+
+function hasStoredScore(value) {
+  if (value === null || value === undefined || value === "") return false;
+  return Number.isFinite(Number(value));
 }
 
 function formatPredictionMeta(prediction) {
