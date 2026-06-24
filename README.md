@@ -25,6 +25,7 @@
 2. 在 Supabase SQL Editor 运行 `supabase/schema.sql`。已经建过表时也可以重新运行，它会补齐新增字段。
 3. 在 `supabase-config.js` 填入项目的 URL 和 anon key，然后重新发布。
 4. Supabase Auth 里启用 Email provider，并关闭 Confirm email。
+5. 如需自动结算排行榜，在 GitHub 仓库的 Actions secrets 里添加 `SUPABASE_SERVICE_ROLE_KEY`。它来自 Supabase Project Settings 的 service role secret，只能放在 GitHub Secrets，不能写进前端代码或仓库。`SUPABASE_URL` 可选；不填时会使用 `supabase-config.js` 里的项目 URL。
 
 权限设计：
 
@@ -52,6 +53,7 @@
 - 赛程/比分同步会尽量保留本地已有 `lambdaHome/lambdaAway` 和赔率。
 - 赔率同步会聚合同一场比赛多个 bookmaker 的 1X2 赔率均值，去水后反推 `lambdaHome/lambdaAway`。
 - 如果接口失败，页面会保留现有本地数据并在实时状态栏显示错误。
+- GitHub Actions 每 5 分钟刷新 `data/worldcup26-games.json`，并在配置 `SUPABASE_SERVICE_ROLE_KEY` 后自动把已完赛比分写入 Supabase `match_results`，供预测排行榜统一结算。
 
 ## 数据结构
 

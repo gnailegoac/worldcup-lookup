@@ -2761,7 +2761,7 @@ function renderLeaderboard() {
 
   const rows = state.leaderboardRows;
   if (!rows.length) {
-    return `<div class="empty-list compact-empty">暂无已结算的预测。如果已有完赛预测，请用管理员账号刷新一次以同步赛果。</div>`;
+    return `<div class="empty-list compact-empty">暂无已结算的预测。如果已有完赛预测，请等待自动赛果同步任务写入排行榜数据。</div>`;
   }
 
   return rows.map(renderLeaderboardRow).join("");

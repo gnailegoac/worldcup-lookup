@@ -253,13 +253,26 @@ $$;
 revoke all on function public.is_admin() from public;
 grant execute on function public.is_admin() to authenticated;
 
+create or replace function public.can_manage_match_results()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select coalesce(auth.role(), '') = 'service_role' or public.is_admin();
+$$;
+
+revoke all on function public.can_manage_match_results() from public;
+grant execute on function public.can_manage_match_results() to authenticated, service_role;
+
 drop policy if exists "Admins can manage match results" on public.match_results;
 create policy "Admins can manage match results"
   on public.match_results
   for all
   to authenticated
-  using (public.is_admin())
-  with check (public.is_admin());
+  using (public.can_manage_match_results())
+  with check (public.can_manage_match_results());
 
 create or replace function public.admin_upsert_match_results(results jsonb)
 returns integer
@@ -270,7 +283,7 @@ as $$
 declare
   upserted_count integer;
 begin
-  if not public.is_admin() then
+  if not public.can_manage_match_results() then
     raise exception 'not authorized' using errcode = '42501';
   end if;
 
@@ -364,7 +377,7 @@ end;
 $$;
 
 revoke all on function public.admin_upsert_match_results(jsonb) from public;
-grant execute on function public.admin_upsert_match_results(jsonb) to authenticated;
+grant execute on function public.admin_upsert_match_results(jsonb) to authenticated, service_role;
 
 create or replace function public.get_public_leaderboard(min_predictions integer default 1)
 returns table (
