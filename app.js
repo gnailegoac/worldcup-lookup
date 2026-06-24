@@ -16,6 +16,7 @@ const MAX_EXACT_GOALS = 6;
 const MAX_WDL_GOALS = 12;
 const SHOW_ADMIN_TOOLS = false;
 const AUTH_REFRESH_MARGIN_MS = 2 * 60 * 1000;
+const LEADERBOARD_MIN_SETTLED_PREDICTIONS = 1;
 const AUTO_SCHEDULE_SYNC_MAX_AGE_MS = 15 * 60 * 1000;
 const PENDING_RESULT_RETRY_MS = 60 * 1000;
 const MIN_LIVE_SCHEDULE_MATCHES = 60;
@@ -635,6 +636,9 @@ const state = {
   predictionNotice: "",
   myPredictions: [],
   publicPredictions: [],
+  leaderboardRows: [],
+  leaderboardNotice: "",
+  isLoadingLeaderboard: false,
   isLoadingPredictions: false,
   isAuthBusy: false,
   isAdmin: false,
@@ -1566,6 +1570,8 @@ async function loadPredictions() {
   if (!state.supabase) {
     state.myPredictions = [];
     state.publicPredictions = [];
+    state.leaderboardRows = [];
+    state.leaderboardNotice = "";
     resetAdminState();
     render();
     return;
@@ -1611,7 +1617,61 @@ async function loadPredictions() {
     state.myPredictions = myResult.data || [];
   }
   await loadAdminData();
+  await loadLeaderboardData();
   render();
+}
+
+async function loadLeaderboardData() {
+  if (!state.supabase?.rpc || !state.authSession?.user) {
+    state.leaderboardRows = [];
+    state.leaderboardNotice = "";
+    state.isLoadingLeaderboard = false;
+    return;
+  }
+
+  state.isLoadingLeaderboard = true;
+  renderPredictionLists();
+  const result = await state.supabase.rpc("get_public_leaderboard", {
+    min_predictions: LEADERBOARD_MIN_SETTLED_PREDICTIONS,
+  });
+  state.isLoadingLeaderboard = false;
+
+  if (isAuthExpiredError(result.error)) {
+    await expireAuthSession();
+    return;
+  }
+
+  if (result.error) {
+    state.leaderboardRows = [];
+    state.leaderboardNotice = isMissingSettlementSchemaError(result.error)
+      ? "请重新运行 supabase/schema.sql 后查看服务端排行榜。"
+      : `读取排行榜失败：${result.error.message}`;
+    return;
+  }
+
+  state.leaderboardRows = normalizeLeaderboardRows(result.data || []);
+  state.leaderboardNotice = "";
+}
+
+function normalizeLeaderboardRows(rows) {
+  return rows.map((row) => {
+    const correct = Number(row.correct_count ?? row.correct ?? 0);
+    const total = Number(row.settled_count ?? row.total ?? 0);
+    return {
+      userId: row.user_id || row.userId || "",
+      displayName: cleanText(row.display_name || row.displayName) || `用户 ${shortUserId(row.user_id || row.userId)}`,
+      correct,
+      total,
+      accuracy: Number(row.accuracy ?? (total ? correct / total : 0)),
+      latestAt: row.latest_prediction_at || row.latestAt || "",
+    };
+  });
+}
+
+function isMissingSettlementSchemaError(error) {
+  return /get_public_leaderboard|admin_upsert_match_results|match_results|schema cache|function .* not found|could not find/i.test(
+    `${error?.message || ""} ${error?.details || ""} ${error?.hint || ""}`,
+  );
 }
 
 async function loadAdminData(options = {}) {
@@ -1634,6 +1694,7 @@ async function loadAdminData(options = {}) {
   }
 
   state.isAdmin = true;
+  await syncSettledMatchResults();
   const usersResult = await state.supabase.rpc("admin_list_users");
   if (isAuthExpiredError(usersResult.error)) {
     await expireAuthSession();
@@ -1661,6 +1722,51 @@ async function loadAdminData(options = {}) {
 
   state.isLoadingAdmin = false;
   renderAdminPanel();
+}
+
+async function syncSettledMatchResults() {
+  if (!state.supabase?.rpc || !state.isAdmin) return;
+  const results = buildSettledMatchResultsPayload();
+  if (!results.length) return;
+
+  const result = await state.supabase.rpc("admin_upsert_match_results", { results });
+  if (isAuthExpiredError(result.error)) {
+    await expireAuthSession();
+    return;
+  }
+  if (result.error) {
+    if (isMissingSettlementSchemaError(result.error)) {
+      state.adminNotice = "请重新运行 supabase/schema.sql 后启用服务端排行榜结算。";
+    } else {
+      state.adminNotice = `同步赛果失败：${result.error.message}`;
+    }
+  } else if (/服务端排行榜|同步赛果失败/.test(state.adminNotice)) {
+    state.adminNotice = "";
+  }
+}
+
+function buildSettledMatchResultsPayload() {
+  return state.matches
+    .filter(isFinishedMatch)
+    .map((match) => ({
+      match_id: match.id,
+      match_label: `${match.home} vs ${match.away}`,
+      match_kickoff_utc: match.kickoffUtc,
+      home_team: match.home,
+      away_team: match.away,
+      home_score: Number(match.result.home),
+      away_score: Number(match.result.away),
+      status: "finished",
+      source: match.source || "WorldCupLookup schedule sync",
+    }))
+    .filter(
+      (result) =>
+        cleanText(result.match_id) &&
+        Number.isFinite(result.home_score) &&
+        Number.isFinite(result.away_score) &&
+        result.home_score >= 0 &&
+        result.away_score >= 0,
+    );
 }
 
 async function loadAdminUserPredictions(userId) {
@@ -2652,56 +2758,16 @@ function getSelectedAdminUser() {
 }
 
 function renderLeaderboard() {
-  if (state.isLoadingPredictions) return `<div class="empty-list compact-empty">正在加载排行榜...</div>`;
+  if (state.isLoadingPredictions || state.isLoadingLeaderboard) return `<div class="empty-list compact-empty">正在加载排行榜...</div>`;
   if (!state.supabase) return `<div class="empty-list compact-empty">连接 Supabase 后查看排行榜</div>`;
   if (!state.authSession?.user) return `<div class="empty-list compact-empty">登录后查看排行榜</div>`;
 
-  const rows = buildLeaderboardRows();
+  if (state.leaderboardNotice) return `<div class="empty-list compact-empty">${escapeHtml(state.leaderboardNotice)}</div>`;
+
+  const rows = state.leaderboardRows;
   if (!rows.length) return `<div class="empty-list compact-empty">暂无已结算的公开预测</div>`;
 
   return rows.map(renderLeaderboardRow).join("");
-}
-
-function buildLeaderboardRows() {
-  const users = new Map();
-  getUniquePredictions(state.publicPredictions)
-    .filter((prediction) => prediction.is_public)
-    .forEach((prediction) => {
-      const assessment = assessPrediction(prediction);
-      if (!assessment) return;
-
-      const userId = prediction.user_id || getPredictionDisplayName(prediction);
-      if (!users.has(userId)) {
-        users.set(userId, {
-          userId,
-          displayName: getPredictionDisplayName(prediction),
-          correct: 0,
-          total: 0,
-          latestAt: "",
-        });
-      }
-
-      const row = users.get(userId);
-      row.correct += assessment.correct ? 1 : 0;
-      row.total += 1;
-      row.latestAt = maxDateString(row.latestAt, prediction.created_at);
-      const displayName = getPredictionDisplayName(prediction);
-      if (displayName && !isFallbackUserName(displayName)) row.displayName = displayName;
-    });
-
-  return [...users.values()]
-    .filter((row) => row.total > 0)
-    .map((row) => ({
-      ...row,
-      accuracy: row.correct / row.total,
-    }))
-    .sort((a, b) =>
-      b.accuracy - a.accuracy ||
-      b.correct - a.correct ||
-      b.total - a.total ||
-      new Date(b.latestAt) - new Date(a.latestAt),
-    )
-    .slice(0, 20);
 }
 
 function renderLeaderboardRow(row, index) {
@@ -2713,59 +2779,6 @@ function renderLeaderboardRow(row, index) {
       <span class="leaderboard-record">命中 ${row.correct}/${row.total}</span>
     </article>
   `;
-}
-
-function getUniquePredictions(predictions) {
-  const map = new Map();
-  predictions.forEach((prediction) => {
-    const key = prediction.id || `${prediction.user_id || ""}:${prediction.match_id || ""}`;
-    if (!map.has(key)) map.set(key, prediction);
-  });
-  return [...map.values()];
-}
-
-function assessPrediction(prediction) {
-  const match = findMatchById(prediction.match_id);
-  const result = getFinalResultForLeaderboard(match);
-  if (!result) return null;
-  return { correct: isPredictionCorrect(prediction, result) };
-}
-
-function findMatchById(matchId) {
-  return state.matches.find((match) => match.id === matchId);
-}
-
-function getFinalResultForLeaderboard(match) {
-  if (!match || !hasResult(match) || match.liveStatus === "LIVE") return null;
-  const result = getVisibleResult(match);
-  if (!result) return null;
-  return {
-    home: Number(result.home),
-    away: Number(result.away),
-  };
-}
-
-function isPredictionCorrect(prediction, result) {
-  if (isScorePrediction(prediction)) {
-    return Number(prediction.home_score) === result.home && Number(prediction.away_score) === result.away;
-  }
-  return prediction.outcome === getOutcomeFromResult(result);
-}
-
-function getOutcomeFromResult(result) {
-  if (result.home > result.away) return "home";
-  if (result.home < result.away) return "away";
-  return "draw";
-}
-
-function maxDateString(a, b) {
-  if (!a) return b || "";
-  if (!b) return a;
-  return new Date(a) > new Date(b) ? a : b;
-}
-
-function isFallbackUserName(value) {
-  return cleanText(value).startsWith("用户 ");
 }
 
 function renderPredictionList({ predictions, emptyText, showOwner }) {

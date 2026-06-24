@@ -102,6 +102,39 @@ create trigger predictions_set_updated_at
   for each row
   execute function public.set_updated_at();
 
+create table if not exists public.match_results (
+  match_id text primary key,
+  match_label text not null,
+  match_kickoff_utc timestamptz,
+  home_team text,
+  away_team text,
+  home_score integer not null check (home_score >= 0),
+  away_score integer not null check (away_score >= 0),
+  status text not null default 'finished' check (status = 'finished'),
+  source text,
+  settled_at timestamptz not null default now(),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists match_results_updated_idx
+  on public.match_results (updated_at desc);
+
+alter table public.match_results enable row level security;
+
+drop policy if exists "Authenticated users can read match results" on public.match_results;
+create policy "Authenticated users can read match results"
+  on public.match_results
+  for select
+  to authenticated
+  using (true);
+
+drop trigger if exists match_results_set_updated_at on public.match_results;
+create trigger match_results_set_updated_at
+  before update on public.match_results
+  for each row
+  execute function public.set_updated_at();
+
 create table if not exists public.user_profiles (
   user_id uuid primary key references auth.users(id) on delete cascade,
   username text not null,
@@ -205,6 +238,191 @@ $$;
 
 revoke all on function public.is_admin() from public;
 grant execute on function public.is_admin() to authenticated;
+
+drop policy if exists "Admins can manage match results" on public.match_results;
+create policy "Admins can manage match results"
+  on public.match_results
+  for all
+  to authenticated
+  using (public.is_admin())
+  with check (public.is_admin());
+
+create or replace function public.admin_upsert_match_results(results jsonb)
+returns integer
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  upserted_count integer;
+begin
+  if not public.is_admin() then
+    raise exception 'not authorized' using errcode = '42501';
+  end if;
+
+  if results is null or jsonb_typeof(results) <> 'array' then
+    raise exception 'results must be a json array' using errcode = '22023';
+  end if;
+
+  with input as (
+    select *
+    from jsonb_to_recordset(results) as item(
+      match_id text,
+      match_label text,
+      match_kickoff_utc timestamptz,
+      home_team text,
+      away_team text,
+      home_score integer,
+      away_score integer,
+      status text,
+      source text
+    )
+  ),
+  valid as (
+    select
+      trim(match_id) as match_id,
+      coalesce(nullif(trim(match_label), ''), trim(match_id)) as match_label,
+      match_kickoff_utc,
+      nullif(trim(home_team), '') as home_team,
+      nullif(trim(away_team), '') as away_team,
+      home_score,
+      away_score,
+      'finished'::text as status,
+      nullif(trim(source), '') as source
+    from input
+    where nullif(trim(match_id), '') is not null
+      and home_score is not null
+      and away_score is not null
+      and home_score >= 0
+      and away_score >= 0
+      and coalesce(nullif(trim(status), ''), 'finished') = 'finished'
+  ),
+  upserted as (
+    insert into public.match_results (
+      match_id,
+      match_label,
+      match_kickoff_utc,
+      home_team,
+      away_team,
+      home_score,
+      away_score,
+      status,
+      source,
+      settled_at
+    )
+    select
+      valid.match_id,
+      valid.match_label,
+      valid.match_kickoff_utc,
+      valid.home_team,
+      valid.away_team,
+      valid.home_score,
+      valid.away_score,
+      valid.status,
+      valid.source,
+      now()
+    from valid
+    on conflict (match_id) do update
+    set
+      match_label = excluded.match_label,
+      match_kickoff_utc = excluded.match_kickoff_utc,
+      home_team = excluded.home_team,
+      away_team = excluded.away_team,
+      settled_at = case
+        when public.match_results.home_score is distinct from excluded.home_score
+          or public.match_results.away_score is distinct from excluded.away_score
+          or public.match_results.status is distinct from excluded.status
+        then now()
+        else public.match_results.settled_at
+      end,
+      home_score = excluded.home_score,
+      away_score = excluded.away_score,
+      status = excluded.status,
+      source = excluded.source,
+      updated_at = now()
+    returning 1
+  )
+  select count(*)::integer into upserted_count
+  from upserted;
+
+  return coalesce(upserted_count, 0);
+end;
+$$;
+
+revoke all on function public.admin_upsert_match_results(jsonb) from public;
+grant execute on function public.admin_upsert_match_results(jsonb) to authenticated;
+
+create or replace function public.get_public_leaderboard(min_predictions integer default 1)
+returns table (
+  user_id uuid,
+  display_name text,
+  correct_count bigint,
+  settled_count bigint,
+  accuracy numeric,
+  latest_prediction_at timestamptz
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if auth.uid() is null then
+    raise exception 'not authorized' using errcode = '42501';
+  end if;
+
+  return query
+  with assessed as (
+    select
+      predictions.user_id,
+      coalesce(
+        nullif(profiles.username, ''),
+        nullif(predictions.display_name, ''),
+        'user ' || left(predictions.user_id::text, 8)
+      ) as display_name,
+      predictions.created_at,
+      case
+        when predictions.prediction_type = 'score' then
+          predictions.home_score = match_results.home_score
+          and predictions.away_score = match_results.away_score
+        when predictions.prediction_type = 'outcome' then
+          predictions.outcome = case
+            when match_results.home_score > match_results.away_score then 'home'
+            when match_results.home_score < match_results.away_score then 'away'
+            else 'draw'
+          end
+        else false
+      end as correct
+    from public.predictions predictions
+    join public.match_results match_results
+      on match_results.match_id = predictions.match_id
+      and match_results.status = 'finished'
+    left join public.user_profiles profiles
+      on profiles.user_id = predictions.user_id
+    where predictions.is_public = true
+      and predictions.created_at < predictions.match_kickoff_utc
+      and predictions.updated_at < predictions.match_kickoff_utc
+  )
+  select
+    assessed.user_id,
+    max(assessed.display_name) as display_name,
+    count(*) filter (where assessed.correct) as correct_count,
+    count(*) as settled_count,
+    (count(*) filter (where assessed.correct))::numeric / nullif(count(*), 0)::numeric as accuracy,
+    max(assessed.created_at) as latest_prediction_at
+  from assessed
+  group by assessed.user_id
+  having count(*) >= greatest(1, coalesce(min_predictions, 1))
+  order by
+    ((count(*) filter (where assessed.correct))::numeric / nullif(count(*), 0)::numeric) desc,
+    count(*) filter (where assessed.correct) desc,
+    count(*) desc,
+    max(assessed.created_at) desc
+  limit 50;
+end;
+$$;
+
+revoke all on function public.get_public_leaderboard(integer) from public;
+grant execute on function public.get_public_leaderboard(integer) to authenticated;
 
 create or replace function public.admin_list_users()
 returns table (
