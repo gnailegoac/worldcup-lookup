@@ -1804,6 +1804,7 @@ function normalizeLeaderboardRows(rows) {
       correct,
       total,
       accuracy: Number(row.accuracy ?? (total ? correct / total : 0)),
+      score: Number(row.score ?? row.points ?? correct),
       latestAt: row.latest_prediction_at || row.latestAt || "",
     };
   });
@@ -3262,10 +3263,18 @@ function renderLeaderboardRow(row, index) {
     <article class="leaderboard-row">
       <span class="leaderboard-rank">#${index + 1}</span>
       <strong>${escapeHtml(row.displayName)}</strong>
-      <span class="leaderboard-accuracy">${formatPercent(row.accuracy)}</span>
-      <span class="leaderboard-record">命中 ${row.correct}/${row.total}</span>
+      <span class="leaderboard-score">${escapeHtml(formatLeaderboardScore(row.score))}</span>
+      <span class="leaderboard-record">命中 ${row.correct}/${row.total} · ${formatPercent(row.accuracy)}</span>
     </article>
   `;
+}
+
+function formatLeaderboardScore(score) {
+  const value = Number(score);
+  if (!Number.isFinite(value)) return "0 分";
+  if (value >= 100) return `${value.toFixed(0)} 分`;
+  if (value >= 10) return `${value.toFixed(1)} 分`;
+  return `${value.toFixed(2)} 分`;
 }
 
 function renderPredictionList({ predictions, emptyText, showOwner }) {

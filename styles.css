@@ -939,7 +939,7 @@ h1 {
   font-weight: 950;
 }
 
-.leaderboard-accuracy {
+.leaderboard-score {
   font-size: 1.05rem;
   font-weight: 950;
 }
@@ -1400,7 +1400,7 @@ h1 {
     grid-column: 1;
   }
 
-  .leaderboard-accuracy,
+  .leaderboard-score,
   .leaderboard-record {
     grid-column: 2;
     justify-self: start;

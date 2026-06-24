@@ -457,6 +457,8 @@ $$;
 revoke all on function public.admin_upsert_match_results(jsonb) from public;
 grant execute on function public.admin_upsert_match_results(jsonb) to authenticated, service_role;
 
+drop function if exists public.get_public_leaderboard(integer);
+
 create or replace function public.get_public_leaderboard(min_predictions integer default 1)
 returns table (
   user_id uuid,
@@ -464,6 +466,7 @@ returns table (
   correct_count bigint,
   settled_count bigint,
   accuracy numeric,
+  score numeric,
   latest_prediction_at timestamptz
 )
 language plpgsql
@@ -485,6 +488,7 @@ begin
         'user ' || left(predictions.user_id::text, 8)
       ) as display_name,
       predictions.created_at,
+      predictions.model_probability,
       case
         when predictions.prediction_type = 'score' then
           predictions.home_score = match_results.home_score
@@ -530,11 +534,31 @@ begin
     count(*) filter (where assessed.correct) as correct_count,
     count(*) as settled_count,
     (count(*) filter (where assessed.correct))::numeric / nullif(count(*), 0)::numeric as accuracy,
+    sum(
+      case
+        when assessed.correct is true
+          and assessed.model_probability is not null
+          and assessed.model_probability > 0
+          then 1::numeric / assessed.model_probability
+        when assessed.correct is true then 1::numeric
+        else 0::numeric
+      end
+    ) as score,
     max(assessed.created_at) as latest_prediction_at
   from assessed
   group by assessed.user_id
   having count(*) >= greatest(1, coalesce(min_predictions, 1))
   order by
+    sum(
+      case
+        when assessed.correct is true
+          and assessed.model_probability is not null
+          and assessed.model_probability > 0
+          then 1::numeric / assessed.model_probability
+        when assessed.correct is true then 1::numeric
+        else 0::numeric
+      end
+    ) desc,
     ((count(*) filter (where assessed.correct))::numeric / nullif(count(*), 0)::numeric) desc,
     count(*) filter (where assessed.correct) desc,
     count(*) desc,
