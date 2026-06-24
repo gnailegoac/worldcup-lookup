@@ -15,6 +15,7 @@ const DEMO_REFERENCE_AT = "2026-06-22T16:00:00Z";
 const MAX_EXACT_GOALS = 6;
 const MAX_WDL_GOALS = 12;
 const SHOW_ADMIN_TOOLS = false;
+const AUTH_REFRESH_MARGIN_MS = 2 * 60 * 1000;
 const AUTO_SCHEDULE_SYNC_MAX_AGE_MS = 15 * 60 * 1000;
 const PENDING_RESULT_RETRY_MS = 60 * 1000;
 const MIN_LIVE_SCHEDULE_MATCHES = 60;
@@ -627,6 +628,7 @@ const state = {
   supabase: null,
   authSession: null,
   authExpiryTimer: null,
+  authRefreshPromise: null,
   scheduleRetryTimer: null,
   authStatus: "未连接 Supabase",
   authNotice: "",
@@ -1282,13 +1284,16 @@ function setAuthSession(session) {
 function scheduleAuthExpiry(session) {
   const expiresAt = Number(session?.expires_at);
   if (!Number.isFinite(expiresAt) || expiresAt <= 0) return;
-  const delayMs = expiresAt * 1000 - Date.now();
-  if (delayMs <= 0) {
-    expireAuthSession();
+  const expireDelayMs = expiresAt * 1000 - Date.now();
+  if (expireDelayMs <= 0) {
+    refreshAuthSession();
     return;
   }
+  const shouldRefresh = Boolean(session.refresh_token);
+  const delayMs = shouldRefresh ? Math.max(0, expireDelayMs - AUTH_REFRESH_MARGIN_MS) : expireDelayMs;
   state.authExpiryTimer = setTimeout(() => {
-    expireAuthSession();
+    if (shouldRefresh) refreshAuthSession();
+    else expireAuthSession();
   }, Math.min(delayMs, 2147483647));
 }
 
@@ -1314,6 +1319,38 @@ async function expireAuthSession(message = "登录已过期，请重新登录。
   render();
 }
 
+async function refreshAuthSession() {
+  if (!state.supabase?.auth?.refreshSession) {
+    await expireAuthSession();
+    return false;
+  }
+  if (!state.authSession?.refresh_token) {
+    await expireAuthSession();
+    return false;
+  }
+  if (state.authRefreshPromise) return state.authRefreshPromise;
+
+  clearAuthExpiryTimer();
+  state.authRefreshPromise = (async () => {
+    const { data, error } = await state.supabase.auth.refreshSession(state.authSession);
+    if (error || !data?.session) {
+      await expireAuthSession(error?.message || "登录已过期，请重新登录。");
+      return false;
+    }
+    setAuthSession(data.session);
+    state.authStatus = `已进入：${getCurrentDisplayName()}`;
+    state.authNotice = "";
+    renderAuthStatus();
+    return true;
+  })();
+
+  try {
+    return await state.authRefreshPromise;
+  } finally {
+    state.authRefreshPromise = null;
+  }
+}
+
 function isSessionExpired(session) {
   const expiresAt = Number(session?.expires_at);
   return Number.isFinite(expiresAt) && expiresAt > 0 && expiresAt * 1000 <= Date.now();
@@ -1332,8 +1369,8 @@ async function submitPrediction(match) {
     return;
   }
   if (isSessionExpired(state.authSession)) {
-    await expireAuthSession();
-    return;
+    const refreshed = await refreshAuthSession();
+    if (!refreshed) return;
   }
   if (!isMatchPredictable(match)) {
     state.predictionNotice = "只能预测未开赛的比赛。";
@@ -1534,8 +1571,8 @@ async function loadPredictions() {
     return;
   }
   if (state.authSession && isSessionExpired(state.authSession)) {
-    await expireAuthSession();
-    return;
+    const refreshed = await refreshAuthSession();
+    if (!refreshed) return;
   }
   state.isLoadingPredictions = true;
   renderAuthStatus();
@@ -1746,20 +1783,22 @@ function createSupabaseRestClient(projectUrl, apiKey) {
   const listeners = new Set();
   let expiredSessionDetected = false;
 
-  const getStoredSession = () => {
+  const readStoredSession = () => {
     try {
       const stored = localStorage.getItem(sessionKey);
-      const session = stored ? JSON.parse(stored) : null;
-      if (isSessionExpired(session)) {
-        expiredSessionDetected = true;
-        localStorage.removeItem(sessionKey);
-        notify("TOKEN_EXPIRED", null);
-        return null;
-      }
-      return session;
+      return stored ? JSON.parse(stored) : null;
     } catch {
       return null;
     }
+  };
+
+  const getStoredSession = () => {
+    const session = readStoredSession();
+    if (isSessionExpired(session)) {
+      expiredSessionDetected = true;
+      return null;
+    }
+    return session;
   };
 
   const notify = (event, session) => {
@@ -1772,15 +1811,30 @@ function createSupabaseRestClient(projectUrl, apiKey) {
     notify(event, session);
   };
 
+  const refreshStoredSession = async (session = readStoredSession()) => {
+    const refreshToken = session?.refresh_token;
+    if (!refreshToken) throw new Error("Missing refresh token");
+    const payload = await request("/auth/v1/token?grant_type=refresh_token", {
+      method: "POST",
+      body: JSON.stringify({ refresh_token: refreshToken }),
+      useSession: false,
+    });
+    const refreshed = normalizeSupabaseSession(payload, session);
+    if (!refreshed) throw new Error("Refresh did not return a session");
+    saveSession(refreshed, "TOKEN_REFRESHED");
+    return refreshed;
+  };
+
   const request = async (path, options = {}) => {
-    const session = getStoredSession();
+    const { useSession = true, ...fetchOptions } = options;
+    const session = useSession ? getStoredSession() : null;
     const response = await fetch(`${baseUrl}${path}`, {
-      ...options,
+      ...fetchOptions,
       headers: {
         apikey: apiKey,
         Authorization: `Bearer ${session?.access_token || apiKey}`,
         "Content-Type": "application/json",
-        ...(options.headers || {}),
+        ...(fetchOptions.headers || {}),
       },
     });
     const text = await response.text();
@@ -1794,7 +1848,18 @@ function createSupabaseRestClient(projectUrl, apiKey) {
   return {
     auth: {
       async getSession() {
-        const session = getStoredSession();
+        const session = readStoredSession();
+        if (isSessionExpired(session)) {
+          expiredSessionDetected = true;
+          try {
+            const refreshed = await refreshStoredSession(session);
+            expiredSessionDetected = false;
+            return { data: { session: refreshed, expired: false }, error: null };
+          } catch {
+            saveSession(null, "TOKEN_EXPIRED");
+            return { data: { session: null, expired: true }, error: null };
+          }
+        }
         const expired = expiredSessionDetected;
         expiredSessionDetected = false;
         return { data: { session, expired }, error: null };
@@ -1832,6 +1897,15 @@ function createSupabaseRestClient(projectUrl, apiKey) {
           if (session) saveSession(session, "SIGNED_IN");
           return { data: { session, user: session?.user || null }, error: null };
         } catch (error) {
+          return { data: { session: null, user: null }, error };
+        }
+      },
+      async refreshSession(session) {
+        try {
+          const refreshed = await refreshStoredSession(session);
+          return { data: { session: refreshed, user: refreshed.user || null }, error: null };
+        } catch (error) {
+          saveSession(null, "TOKEN_EXPIRED");
           return { data: { session: null, user: null }, error };
         }
       },
@@ -1933,18 +2007,18 @@ class SupabaseRestQuery {
   }
 }
 
-function normalizeSupabaseSession(payload) {
+function normalizeSupabaseSession(payload, previousSession = null) {
   if (!payload?.access_token) return null;
   const expiresAt =
     payload.expires_at ||
     (payload.expires_in ? Math.floor(Date.now() / 1000) + Number(payload.expires_in) : null);
   return {
     access_token: payload.access_token,
-    refresh_token: payload.refresh_token || "",
+    refresh_token: payload.refresh_token || previousSession?.refresh_token || "",
     token_type: payload.token_type || "bearer",
     expires_in: payload.expires_in || null,
     expires_at: expiresAt,
-    user: payload.user || decodeJwtUser(payload.access_token),
+    user: payload.user || previousSession?.user || decodeJwtUser(payload.access_token),
   };
 }
 
