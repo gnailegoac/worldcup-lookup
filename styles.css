@@ -890,6 +890,27 @@ h1 {
   grid-column: 1 / -1;
 }
 
+.featured-leaderboard {
+  margin-bottom: 14px;
+  border-color: rgba(15, 118, 110, 0.42);
+  background:
+    linear-gradient(135deg, rgba(15, 118, 110, 0.1), rgba(37, 99, 235, 0.08)),
+    var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.featured-leaderboard .prediction-list-head .section-title {
+  font-size: 1.08rem;
+}
+
+.featured-leaderboard .leaderboard-list {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.featured-leaderboard .leaderboard-row {
+  background: rgba(255, 255, 255, 0.88);
+}
+
 .leaderboard-list {
   display: grid;
   gap: 8px;
@@ -1315,6 +1336,7 @@ h1 {
   .account-controls,
   .prediction-controls,
   .award-grid,
+  .featured-leaderboard .leaderboard-list,
   .predictions-area {
     grid-template-columns: 1fr;
   }

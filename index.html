@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>世界杯比分概率查询</title>
-    <link rel="stylesheet" href="styles.css?v=20260624-award-predictions" />
+    <link rel="stylesheet" href="styles.css?v=20260624-featured-leaderboard" />
   </head>
   <body>
     <main class="app-shell">
@@ -14,6 +14,13 @@
           <h1>世界杯比分概率查询</h1>
         </div>
       </header>
+
+      <section class="prediction-list-panel leaderboard-panel featured-leaderboard" aria-label="预测排行榜">
+        <div class="prediction-list-head">
+          <h2 class="section-title">预测排行榜</h2>
+        </div>
+        <div id="leaderboardList" class="leaderboard-list"></div>
+      </section>
 
       <section class="account-panel" aria-label="用户账号">
         <div class="account-status">
@@ -43,12 +50,6 @@
       <section class="awards-panel" id="awardsPanel" aria-label="奖项概率和预测"></section>
 
       <section class="predictions-area" aria-label="用户预测">
-        <section class="prediction-list-panel leaderboard-panel">
-          <div class="prediction-list-head">
-            <h2 class="section-title">预测排行榜</h2>
-          </div>
-          <div id="leaderboardList" class="leaderboard-list"></div>
-        </section>
         <section class="prediction-list-panel">
           <div class="prediction-list-head">
             <h2 class="section-title">我的历史预测</h2>
@@ -83,7 +84,7 @@
       </section>
     </main>
 
-    <script src="supabase-config.js?v=20260624-award-predictions"></script>
-    <script src="app.js?v=20260624-award-predictions" defer></script>
+    <script src="supabase-config.js?v=20260624-featured-leaderboard"></script>
+    <script src="app.js?v=20260624-featured-leaderboard" defer></script>
   </body>
 </html>
