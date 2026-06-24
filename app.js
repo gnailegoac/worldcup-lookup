@@ -16,7 +16,7 @@ const MAX_WDL_GOALS = 12;
 const SHOW_ADMIN_TOOLS = false;
 const AUTO_SCHEDULE_SYNC_MAX_AGE_MS = 15 * 60 * 1000;
 const MIN_LIVE_SCHEDULE_MATCHES = 60;
-const LIVE_SCHEDULE_FORMAT_VERSION = "official-full-schedule-style-20260623";
+const LIVE_SCHEDULE_FORMAT_VERSION = "official-full-schedule-style-nowref-20260624";
 const BEIJING_TIME_ZONE = "Asia/Shanghai";
 const BEIJING_OFFSET_MINUTES = 8 * 60;
 const WORLDCUP26_STADIUMS = {
@@ -1022,7 +1022,8 @@ async function maybeAutoSyncSchedule() {
   const hasLikelyFullSchedule = state.matches.length >= MIN_LIVE_SCHEDULE_MATCHES;
   const hasLiveFinishedMatches = state.matches.some(isFinishedMatch);
   const hasCurrentFormat = state.liveMeta.scheduleFormatVersion === LIVE_SCHEDULE_FORMAT_VERSION;
-  if (hasRecentSync && hasLikelyFullSchedule && hasLiveFinishedMatches && hasCurrentFormat) return;
+  const hasPastUnresolvedMatches = state.matches.some(isPastUnresolvedMatch);
+  if (hasRecentSync && hasLikelyFullSchedule && hasLiveFinishedMatches && hasCurrentFormat && !hasPastUnresolvedMatches) return;
   await syncWorldCupSchedule({ silent: true, preserveView: true });
 }
 
@@ -2741,13 +2742,21 @@ function isFinishedMatch(match) {
   return match.liveStatus === "FINISHED" && hasResult(match);
 }
 
+function isPastUnresolvedMatch(match) {
+  if (isFinishedMatch(match) || match.liveStatus === "LIVE") return false;
+  const kickoff = getKickoffTime(match);
+  return Number.isFinite(kickoff) && kickoff < Date.now() - 30 * 60 * 1000;
+}
+
 function isUpcomingMatch(match, referenceMs = state.referenceAt.getTime()) {
   if (isFinishedMatch(match)) return false;
+  if (match.liveStatus === "LIVE") return true;
   return getKickoffTime(match) >= referenceMs;
 }
 
 function isHistoryMatch(match, referenceMs = state.referenceAt.getTime()) {
   if (isFinishedMatch(match)) return true;
+  if (match.liveStatus === "LIVE") return false;
   return getKickoffTime(match) < referenceMs;
 }
 
@@ -3290,7 +3299,7 @@ function getInitialReference() {
   const now = new Date();
   const start = new Date("2026-06-11T00:00:00Z");
   const end = new Date("2026-07-20T00:00:00Z");
-  return now >= start && now <= end ? getStartOfBeijingDay(now) : new Date(DEMO_REFERENCE_AT);
+  return now >= start && now <= end ? now : new Date(DEMO_REFERENCE_AT);
 }
 
 function getSupabaseConfig() {
