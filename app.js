@@ -15,8 +15,9 @@ const MAX_EXACT_GOALS = 6;
 const MAX_WDL_GOALS = 12;
 const SHOW_ADMIN_TOOLS = false;
 const AUTO_SCHEDULE_SYNC_MAX_AGE_MS = 15 * 60 * 1000;
+const PENDING_RESULT_RETRY_MS = 60 * 1000;
 const MIN_LIVE_SCHEDULE_MATCHES = 60;
-const LIVE_SCHEDULE_FORMAT_VERSION = "official-full-schedule-style-nowref-20260624";
+const LIVE_SCHEDULE_FORMAT_VERSION = "official-full-schedule-style-nocache-20260624";
 const BEIJING_TIME_ZONE = "Asia/Shanghai";
 const BEIJING_OFFSET_MINUTES = 8 * 60;
 const WORLDCUP26_STADIUMS = {
@@ -625,6 +626,7 @@ const state = {
   supabase: null,
   authSession: null,
   authExpiryTimer: null,
+  scheduleRetryTimer: null,
   authStatus: "未连接 Supabase",
   authNotice: "",
   predictionNotice: "",
@@ -985,7 +987,7 @@ async function syncWorldCupSchedule(options = {}) {
   if (!silent) renderLiveStatus();
 
   try {
-    const payload = await fetchJson(WORLDCUP26_GAMES_URL);
+    const payload = await fetchJson(WORLDCUP26_GAMES_URL, { cacheBust: true });
     const liveMatches = normalizeWorldCup26Payload(payload);
     if (!liveMatches.length) throw new Error("接口没有返回可识别的比赛数据");
 
@@ -1012,6 +1014,7 @@ async function syncWorldCupSchedule(options = {}) {
   } finally {
     state.isSyncingSchedule = false;
     render();
+    schedulePendingResultRetry();
   }
 }
 
@@ -1025,6 +1028,18 @@ async function maybeAutoSyncSchedule() {
   const hasPastUnresolvedMatches = state.matches.some(isPastUnresolvedMatch);
   if (hasRecentSync && hasLikelyFullSchedule && hasLiveFinishedMatches && hasCurrentFormat && !hasPastUnresolvedMatches) return;
   await syncWorldCupSchedule({ silent: true, preserveView: true });
+}
+
+function schedulePendingResultRetry() {
+  if (state.scheduleRetryTimer) {
+    window.clearTimeout(state.scheduleRetryTimer);
+    state.scheduleRetryTimer = null;
+  }
+  if (!state.matches.some(isPastUnresolvedMatch)) return;
+  state.scheduleRetryTimer = window.setTimeout(() => {
+    state.scheduleRetryTimer = null;
+    maybeAutoSyncSchedule();
+  }, PENDING_RESULT_RETRY_MS);
 }
 
 function applyOfficialScheduleSnapshotIfNeeded() {
@@ -1912,11 +1927,13 @@ function decodeJwtUser(token) {
   }
 }
 
-async function fetchJson(url) {
+async function fetchJson(url, options = {}) {
   const controller = new AbortController();
   const timeoutId = window.setTimeout(() => controller.abort(), 18000);
+  const requestUrl = options.cacheBust ? withCacheBust(url) : url;
   try {
-    const response = await fetch(url, {
+    const response = await fetch(requestUrl, {
+      cache: options.cacheBust ? "no-store" : "default",
       headers: { Accept: "application/json" },
       signal: controller.signal,
     });
@@ -1925,6 +1942,11 @@ async function fetchJson(url) {
   } finally {
     window.clearTimeout(timeoutId);
   }
+}
+
+function withCacheBust(url) {
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}_=${Date.now()}`;
 }
 
 function buildOddsUrl(apiKey, sportKey, region) {
