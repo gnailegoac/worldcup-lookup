@@ -393,14 +393,31 @@ begin
         else false
       end as correct
     from public.predictions predictions
-    join public.match_results match_results
-      on match_results.match_id = predictions.match_id
-      and match_results.status = 'finished'
+    join lateral (
+      select match_results.*
+      from public.match_results match_results
+      where match_results.status = 'finished'
+        and (
+          match_results.match_id = predictions.match_id
+          or (
+            match_results.match_kickoff_utc is not null
+            and predictions.match_kickoff_utc is not null
+            and abs(extract(epoch from (match_results.match_kickoff_utc - predictions.match_kickoff_utc))) <= 18 * 60 * 60
+            and lower(regexp_replace(coalesce(match_results.home_team, ''), '\s+', '', 'g')) =
+              lower(regexp_replace(coalesce(predictions.home_team, ''), '\s+', '', 'g'))
+            and lower(regexp_replace(coalesce(match_results.away_team, ''), '\s+', '', 'g')) =
+              lower(regexp_replace(coalesce(predictions.away_team, ''), '\s+', '', 'g'))
+          )
+        )
+      order by
+        case when match_results.match_id = predictions.match_id then 0 else 1 end,
+        abs(extract(epoch from (match_results.match_kickoff_utc - predictions.match_kickoff_utc))) nulls last
+      limit 1
+    ) match_results on true
     left join public.user_profiles profiles
       on profiles.user_id = predictions.user_id
     where predictions.is_public = true
       and predictions.created_at < predictions.match_kickoff_utc
-      and predictions.updated_at < predictions.match_kickoff_utc
   )
   select
     assessed.user_id,

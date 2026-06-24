@@ -2765,7 +2765,9 @@ function renderLeaderboard() {
   if (state.leaderboardNotice) return `<div class="empty-list compact-empty">${escapeHtml(state.leaderboardNotice)}</div>`;
 
   const rows = state.leaderboardRows;
-  if (!rows.length) return `<div class="empty-list compact-empty">暂无已结算的公开预测</div>`;
+  if (!rows.length) {
+    return `<div class="empty-list compact-empty">暂无已结算的公开预测。排行榜只统计公开预测；如果已有完赛公开预测，请用管理员账号刷新一次以同步赛果。</div>`;
+  }
 
   return rows.map(renderLeaderboardRow).join("");
 }
