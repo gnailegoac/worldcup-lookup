@@ -20,9 +20,22 @@ const LEADERBOARD_MIN_SETTLED_PREDICTIONS = 1;
 const AUTO_SCHEDULE_SYNC_MAX_AGE_MS = 15 * 60 * 1000;
 const PENDING_RESULT_RETRY_MS = 60 * 1000;
 const MIN_LIVE_SCHEDULE_MATCHES = 60;
-const LIVE_SCHEDULE_FORMAT_VERSION = "official-full-schedule-cache-fallback-20260624";
+const LIVE_SCHEDULE_FORMAT_VERSION = "official-full-schedule-cache-fallback-awards-20260624";
+const AWARD_PROBABILITY_CANDIDATE_LIMIT = 8;
+const AWARD_PREDICTION_OPTION_LIMIT = 16;
 const BEIJING_TIME_ZONE = "Asia/Shanghai";
 const BEIJING_OFFSET_MINUTES = 8 * 60;
+const AWARD_TYPES = ["golden_ball", "golden_boot", "golden_glove"];
+const AWARD_LABELS = {
+  golden_ball: "金球奖",
+  golden_boot: "金靴奖",
+  golden_glove: "金手套奖",
+};
+const AWARD_DESCRIPTIONS = {
+  golden_ball: "综合进球贡献、球队走势和后续赛程的最佳球员概率。",
+  golden_boot: "根据已进球数、球队剩余赛程和预期进球环境滚动估算。",
+  golden_glove: "按球队失球、零封、晋级走势和剩余赛程估算门将获奖概率。",
+};
 const WORLDCUP26_STADIUMS = {
   1: { name: "Mexico City Stadium", city: "Mexico City", offsetMinutes: -360 },
   2: { name: "Estadio Guadalajara", city: "Guadalajara", offsetMinutes: -360 },
@@ -634,8 +647,12 @@ const state = {
   authStatus: "未连接 Supabase",
   authNotice: "",
   predictionNotice: "",
+  awardPredictionNotice: "",
   myPredictions: [],
   publicPredictions: [],
+  myAwardPredictions: [],
+  awardPredictions: [],
+  awardSchemaMissing: false,
   leaderboardRows: [],
   leaderboardNotice: "",
   isLoadingLeaderboard: false,
@@ -672,6 +689,7 @@ const els = {
   registerButton: document.getElementById("registerButton"),
   signOutButton: document.getElementById("signOutButton"),
   refreshPredictionsButton: document.getElementById("refreshPredictionsButton"),
+  awardsPanel: document.getElementById("awardsPanel"),
   leaderboardList: document.getElementById("leaderboardList"),
   myPredictionsList: document.getElementById("myPredictionsList"),
   publicPredictionsList: document.getElementById("publicPredictionsList"),
@@ -778,6 +796,9 @@ function bindEvents() {
   });
 
   els.matchDetail.addEventListener("click", handleDetailAction);
+  if (els.awardsPanel) {
+    els.awardsPanel.addEventListener("click", handleAwardAction);
+  }
   if (SHOW_ADMIN_TOOLS) {
     els.syncScheduleButton.addEventListener("click", syncWorldCupSchedule);
     els.syncOddsButton.addEventListener("click", syncOdds);
@@ -825,6 +846,7 @@ function render() {
   renderSummary();
   renderList();
   renderDetail(getSelectedMatch());
+  renderAwards();
   renderPredictionLists();
   renderAdminPanel();
 }
@@ -919,6 +941,12 @@ function handleDetailAction(event) {
   } else if (action === "submit-prediction") {
     submitPrediction(match);
   }
+}
+
+function handleAwardAction(event) {
+  const button = event.target.closest("[data-action='submit-award-prediction']");
+  if (!button) return;
+  submitAwardPrediction(button.dataset.awardType);
 }
 
 function saveSelectedMatch(overrides = {}) {
@@ -1077,8 +1105,12 @@ function applyOfficialScheduleSnapshotIfNeeded() {
   const hasCurrentFormat = state.liveMeta.scheduleFormatVersion === LIVE_SCHEDULE_FORMAT_VERSION;
   const hasOfficialSchedule = state.matches.some((match) => String(match.id || "").startsWith("worldcup26-"));
   const hasOldSeedSchedule = state.matches.some((match) => SEED_MATCH_IDS.has(String(match.id || "")));
-  if (hasCurrentFormat && hasOfficialSchedule && !hasOldSeedSchedule) return;
+  const hasAwardScorerData = state.matches.some(
+    (match) => normalizeStoredScorers(match.homeScorers).length || normalizeStoredScorers(match.awayScorers).length,
+  );
+  if (hasCurrentFormat && hasOfficialSchedule && !hasOldSeedSchedule && hasAwardScorerData) return;
   if (hasOfficialSchedule && !hasOldSeedSchedule) {
+    if (!hasAwardScorerData) return;
     state.liveMeta = {
       ...state.liveMeta,
       scheduleFormatVersion: LIVE_SCHEDULE_FORMAT_VERSION,
@@ -1092,7 +1124,7 @@ function applyOfficialScheduleSnapshotIfNeeded() {
   replaceScheduleMatches(snapshotMatches, { preserveModel: true });
   state.liveMeta = {
     ...state.liveMeta,
-    scheduleFormatVersion: LIVE_SCHEDULE_FORMAT_VERSION,
+    scheduleFormatVersion: "bundled WorldCup26 schedule snapshot",
     scheduleSource: "bundled WorldCup26 schedule snapshot",
     lastScheduleCount: snapshotMatches.length,
   };
@@ -1183,6 +1215,8 @@ async function connectSupabase() {
       if (!active) {
         state.myPredictions = [];
         state.publicPredictions = [];
+        state.myAwardPredictions = [];
+        state.awardPredictions = [];
         resetAdminState();
       }
       loadPredictions();
@@ -1269,6 +1303,8 @@ async function signOut() {
   setAuthSession(null);
   state.myPredictions = [];
   state.publicPredictions = [];
+  state.myAwardPredictions = [];
+  state.awardPredictions = [];
   resetAdminState();
   state.authNotice = error ? state.authNotice : "已退出。";
   await loadPredictions();
@@ -1315,6 +1351,8 @@ async function expireAuthSession(message = "登录已过期，请重新登录。
   state.authSession = null;
   state.myPredictions = [];
   state.publicPredictions = [];
+  state.myAwardPredictions = [];
+  state.awardPredictions = [];
   resetAdminState();
   state.isAuthBusy = false;
   state.authStatus = state.supabase ? "Supabase 已连接" : state.authStatus;
@@ -1420,6 +1458,65 @@ async function submitPrediction(match) {
     return;
   }
   state.predictionNotice = "预测已保存。";
+  await loadPredictions();
+}
+
+async function submitAwardPrediction(awardType) {
+  if (!state.supabase || !state.authSession?.user) {
+    state.awardPredictionNotice = "请先登录后再提交奖项预测。";
+    renderAwards();
+    return;
+  }
+  if (!AWARD_TYPES.includes(awardType)) return;
+
+  const form = els.awardsPanel?.querySelector(`[data-award-form="${awardType}"]`);
+  if (!form) return;
+
+  const formData = new FormData(form);
+  const candidateName = cleanText(formData.get("candidateName"));
+  if (!candidateName) {
+    state.awardPredictionNotice = "请选择有效的奖项候选人。";
+    renderAwards();
+    return;
+  }
+
+  const awards = computeAwardProbabilities();
+  const award = awards.find((item) => item.type === awardType);
+  const candidate = award?.candidates.find((item) => item.name === candidateName);
+  const payload = {
+    user_id: state.authSession.user.id,
+    award_type: awardType,
+    display_name: getCurrentDisplayName(),
+    candidate_name: candidateName,
+    candidate_team: candidate?.team || "",
+    model_probability: candidate ? normalizeStoredProbability(candidate.probability) : null,
+    model_snapshot_at: new Date().toISOString(),
+    is_public: true,
+  };
+
+  state.awardPredictionNotice = `正在保存${AWARD_LABELS[awardType]}预测...`;
+  renderAwards();
+  await saveUserProfile(payload.display_name);
+
+  const { error } = await state.supabase
+    .from("award_predictions")
+    .upsert(payload, { onConflict: "user_id,award_type" });
+
+  if (isAuthExpiredError(error)) {
+    await expireAuthSession();
+    return;
+  }
+  if (error) {
+    state.awardSchemaMissing = isMissingAwardPredictionSchemaError(error);
+    state.awardPredictionNotice = state.awardSchemaMissing
+      ? "请重新运行 supabase/schema.sql 后启用奖项预测。"
+      : `奖项预测提交失败：${error.message}`;
+    renderAwards();
+    return;
+  }
+
+  state.awardSchemaMissing = false;
+  state.awardPredictionNotice = `${AWARD_LABELS[awardType]}预测已保存。`;
   await loadPredictions();
 }
 
@@ -1569,6 +1666,9 @@ async function loadPredictions() {
   if (!state.supabase) {
     state.myPredictions = [];
     state.publicPredictions = [];
+    state.myAwardPredictions = [];
+    state.awardPredictions = [];
+    state.awardSchemaMissing = false;
     state.leaderboardRows = [];
     state.leaderboardNotice = "";
     resetAdminState();
@@ -1601,10 +1701,38 @@ async function loadPredictions() {
         .limit(500)
     : Promise.resolve({ data: [], error: null });
 
-  const [publicResult, myResult] = await Promise.all([publicQuery, myQuery]);
+  const awardQuery = user
+    ? state.supabase
+        .from("award_predictions")
+        .select("*")
+        .eq("is_public", true)
+        .order("created_at", { ascending: false })
+        .limit(500)
+    : Promise.resolve({ data: [], error: null });
+
+  const myAwardQuery = user
+    ? state.supabase
+        .from("award_predictions")
+        .select("*")
+        .eq("user_id", user.id)
+        .order("created_at", { ascending: false })
+        .limit(50)
+    : Promise.resolve({ data: [], error: null });
+
+  const [publicResult, myResult, awardResult, myAwardResult] = await Promise.all([
+    publicQuery,
+    myQuery,
+    awardQuery,
+    myAwardQuery,
+  ]);
   state.isLoadingPredictions = false;
 
-  if (isAuthExpiredError(publicResult.error) || isAuthExpiredError(myResult.error)) {
+  if (
+    isAuthExpiredError(publicResult.error) ||
+    isAuthExpiredError(myResult.error) ||
+    isAuthExpiredError(awardResult.error) ||
+    isAuthExpiredError(myAwardResult.error)
+  ) {
     await expireAuthSession();
     return;
   }
@@ -1614,6 +1742,20 @@ async function loadPredictions() {
   } else {
     state.publicPredictions = publicResult.data || [];
     state.myPredictions = myResult.data || [];
+  }
+
+  if (awardResult.error || myAwardResult.error) {
+    state.awardPredictions = [];
+    state.myAwardPredictions = [];
+    state.awardSchemaMissing = isMissingAwardPredictionSchemaError(awardResult.error || myAwardResult.error);
+    if (!state.awardSchemaMissing) {
+      state.awardPredictionNotice = `读取奖项预测失败：${awardResult.error?.message || myAwardResult.error?.message}`;
+    }
+  } else {
+    state.awardPredictions = awardResult.data || [];
+    state.myAwardPredictions = myAwardResult.data || [];
+    state.awardSchemaMissing = false;
+    if (/奖项预测/.test(state.awardPredictionNotice)) state.awardPredictionNotice = "";
   }
   await loadAdminData();
   await loadLeaderboardData();
@@ -1669,6 +1811,12 @@ function normalizeLeaderboardRows(rows) {
 
 function isMissingSettlementSchemaError(error) {
   return /get_public_leaderboard|admin_upsert_match_results|match_results|schema cache|function .* not found|could not find/i.test(
+    `${error?.message || ""} ${error?.details || ""} ${error?.hint || ""}`,
+  );
+}
+
+function isMissingAwardPredictionSchemaError(error) {
+  return /award_predictions|schema cache|relation .* does not exist|could not find/i.test(
     `${error?.message || ""} ${error?.details || ""} ${error?.hint || ""}`,
   );
 }
@@ -2670,6 +2818,348 @@ function renderScoreGrid(probability) {
   return `<div class="score-grid">${cells.join("")}</div>`;
 }
 
+function renderAwards() {
+  if (!els.awardsPanel) return;
+  els.awardsPanel.innerHTML = renderAwardsPanel();
+}
+
+function renderAwardsPanel() {
+  const awards = computeAwardProbabilities();
+  const finishedCount = state.matches.filter(isFinishedMatch).length;
+  const totalCount = state.matches.length;
+  const notice = state.awardSchemaMissing
+    ? "请重新运行 supabase/schema.sql 后启用奖项预测保存。"
+    : state.awardPredictionNotice;
+
+  return `
+    <div class="prediction-list-head">
+      <div>
+        <h2 class="section-title">奖项概率</h2>
+        <span class="award-subtitle">基于已完赛 ${finishedCount}/${totalCount} 场和后续赛程滚动估算</span>
+      </div>
+    </div>
+    ${notice ? `<div class="prediction-notice award-notice">${escapeHtml(notice)}</div>` : ""}
+    <div class="award-grid">
+      ${awards.map(renderAwardCard).join("")}
+    </div>
+  `;
+}
+
+function renderAwardCard(award) {
+  const myPrediction = state.myAwardPredictions.find((prediction) => prediction.award_type === award.type);
+  const publicPredictions = state.awardPredictions
+    .filter((prediction) => prediction.award_type === award.type)
+    .slice(0, 5);
+  const candidates = award.candidates.slice(0, AWARD_PROBABILITY_CANDIDATE_LIMIT);
+  const options = award.candidates.slice(0, AWARD_PREDICTION_OPTION_LIMIT);
+  const selectedCandidate = myPrediction?.candidate_name || options[0]?.name || "";
+  if (selectedCandidate && !options.some((candidate) => candidate.name === selectedCandidate)) {
+    options.push({
+      name: selectedCandidate,
+      team: myPrediction?.candidate_team || "",
+      probability: normalizeStoredProbability(myPrediction?.model_probability) ?? 0,
+    });
+  }
+  const disabled = !state.supabase || !state.authSession?.user || state.awardSchemaMissing ? "disabled" : "";
+
+  return `
+    <article class="award-card">
+      <div class="award-card-head">
+        <div>
+          <strong>${escapeHtml(award.label)}</strong>
+          <span>${escapeHtml(award.description)}</span>
+        </div>
+      </div>
+      <div class="award-candidates">
+        ${candidates.length ? candidates.map(renderAwardCandidate).join("") : `<div class="empty-list compact-empty">暂无候选概率</div>`}
+      </div>
+      <form class="award-form" data-award-form="${escapeHtml(award.type)}">
+        <label>
+          我的预测
+          <select name="candidateName" ${disabled}>
+            ${options.map((candidate) => `
+              <option value="${escapeHtml(candidate.name)}" ${candidate.name === selectedCandidate ? "selected" : ""}>
+                ${escapeHtml(candidate.name)}${candidate.team ? ` · ${escapeHtml(candidate.team)}` : ""}
+              </option>
+            `).join("")}
+          </select>
+        </label>
+        <button type="button" class="action-button primary" data-action="submit-award-prediction" data-award-type="${escapeHtml(award.type)}" ${disabled}>保存</button>
+      </form>
+      ${myPrediction ? `<div class="award-my-pick">已预测：${escapeHtml(myPrediction.candidate_name)}${myPrediction.candidate_team ? ` · ${escapeHtml(myPrediction.candidate_team)}` : ""}</div>` : ""}
+      <div class="award-public-picks">
+        ${state.authSession?.user
+          ? renderAwardPredictionRows(publicPredictions)
+          : `<span>登录后查看用户奖项预测</span>`}
+      </div>
+    </article>
+  `;
+}
+
+function renderAwardCandidate(candidate, index) {
+  return `
+    <div class="award-candidate">
+      <span class="award-rank">#${index + 1}</span>
+      <strong>${escapeHtml(candidate.name)}</strong>
+      <span>${escapeHtml(candidate.team || "")}</span>
+      <span class="award-probability">${formatPercent(candidate.probability)}</span>
+      <span class="mini-track"><span class="mini-fill" style="width: ${Math.max(4, candidate.probability * 100)}%"></span></span>
+    </div>
+  `;
+}
+
+function renderAwardPredictionRows(predictions) {
+  if (state.isLoadingPredictions) return `<span>正在加载用户奖项预测...</span>`;
+  if (!predictions.length) return `<span>暂无用户预测</span>`;
+  return predictions.map((prediction) => `
+    <span>${escapeHtml(getPredictionDisplayName(prediction))}：${escapeHtml(prediction.candidate_name)}</span>
+  `).join("");
+}
+
+function computeAwardProbabilities() {
+  const context = buildAwardContext();
+  return [
+    {
+      type: "golden_ball",
+      label: AWARD_LABELS.golden_ball,
+      description: AWARD_DESCRIPTIONS.golden_ball,
+      candidates: buildGoldenBallCandidates(context),
+    },
+    {
+      type: "golden_boot",
+      label: AWARD_LABELS.golden_boot,
+      description: AWARD_DESCRIPTIONS.golden_boot,
+      candidates: buildGoldenBootCandidates(context),
+    },
+    {
+      type: "golden_glove",
+      label: AWARD_LABELS.golden_glove,
+      description: AWARD_DESCRIPTIONS.golden_glove,
+      candidates: buildGoldenGloveCandidates(context),
+    },
+  ];
+}
+
+function buildAwardContext() {
+  const teams = new Map();
+  const players = new Map();
+
+  state.matches.forEach((match) => {
+    const homeTeam = ensureAwardTeam(teams, match.home, match.homeAlt, match.homeCode);
+    const awayTeam = ensureAwardTeam(teams, match.away, match.awayAlt, match.awayCode);
+    const result = hasResult(match) ? match.result : null;
+
+    if (isAwardSettledMatch(match) && result) {
+      applyFinishedTeamStats(homeTeam, Number(result.home), Number(result.away));
+      applyFinishedTeamStats(awayTeam, Number(result.away), Number(result.home));
+      addScorersToAwardPlayers(players, match.homeScorers, homeTeam, match.kickoffUtc);
+      addScorersToAwardPlayers(players, match.awayScorers, awayTeam, match.kickoffUtc);
+      return;
+    }
+
+    if (isFutureOrLiveMatch(match)) {
+      const probability = computeProbability(match);
+      homeTeam.remainingMatches += 1;
+      awayTeam.remainingMatches += 1;
+      homeTeam.expectedFutureGoals += safeLambda(match.lambdaHome, 1.25);
+      awayTeam.expectedFutureGoals += safeLambda(match.lambdaAway, 1.05);
+      homeTeam.expectedFuturePoints += probability.homeWin * 3 + probability.draw;
+      awayTeam.expectedFuturePoints += probability.awayWin * 3 + probability.draw;
+    }
+  });
+
+  teams.forEach((team) => {
+    team.goalDiff = team.goalsFor - team.goalsAgainst;
+    team.pointsPerMatch = team.played ? team.points / team.played : 0;
+    team.defenseScore = team.played ? team.cleanSheets * 1.8 + Math.max(0, 2.2 - team.goalsAgainst / team.played) : 0.5;
+    team.performanceScore =
+      team.points * 0.8 +
+      team.goalDiff * 0.45 +
+      team.goalsFor * 0.18 +
+      team.expectedFuturePoints * 0.55 +
+      team.expectedFutureGoals * 0.18 +
+      1;
+    ensureGenericPlayer(players, team);
+  });
+
+  return {
+    teams: [...teams.values()],
+    players: [...players.values()],
+  };
+}
+
+function ensureAwardTeam(teams, name, alt, code) {
+  const key = normalizeTeamKey(alt || code || name) || normalizeAwardKey(name, code);
+  if (!teams.has(key)) {
+    teams.set(key, {
+      key,
+      name: cleanText(name || alt || code),
+      alt: cleanText(alt),
+      code: cleanText(code),
+      played: 0,
+      points: 0,
+      wins: 0,
+      draws: 0,
+      losses: 0,
+      goalsFor: 0,
+      goalsAgainst: 0,
+      cleanSheets: 0,
+      remainingMatches: 0,
+      expectedFutureGoals: 0,
+      expectedFuturePoints: 0,
+      performanceScore: 1,
+      defenseScore: 0.5,
+    });
+  }
+  return teams.get(key);
+}
+
+function applyFinishedTeamStats(team, goalsFor, goalsAgainst) {
+  team.played += 1;
+  team.goalsFor += goalsFor;
+  team.goalsAgainst += goalsAgainst;
+  if (goalsAgainst === 0) team.cleanSheets += 1;
+  if (goalsFor > goalsAgainst) {
+    team.wins += 1;
+    team.points += 3;
+  } else if (goalsFor === goalsAgainst) {
+    team.draws += 1;
+    team.points += 1;
+  } else {
+    team.losses += 1;
+  }
+}
+
+function addScorersToAwardPlayers(players, scorers, team, kickoffUtc) {
+  normalizeStoredScorers(scorers).forEach((name) => {
+    const key = `${normalizeAwardKey(name)}:${team.key}`;
+    const player = players.get(key) || {
+      key,
+      name,
+      team: team.name,
+      teamKey: team.key,
+      teamRef: team,
+      goals: 0,
+      scoringMatches: 0,
+      generic: false,
+      latestGoalAt: "",
+    };
+    player.goals += 1;
+    player.scoringMatches += 1;
+    player.latestGoalAt = kickoffUtc || player.latestGoalAt;
+    players.set(key, player);
+  });
+}
+
+function ensureGenericPlayer(players, team) {
+  const name = `${team.name}核心球员`;
+  const key = `${normalizeAwardKey(name)}:${team.key}`;
+  if (players.has(key)) return;
+  players.set(key, {
+    key,
+    name,
+    team: team.name,
+    teamKey: team.key,
+    teamRef: team,
+    goals: 0,
+    scoringMatches: 0,
+    generic: true,
+    latestGoalAt: "",
+  });
+}
+
+function buildGoldenBootCandidates(context) {
+  const candidates = context.players.map((player) => {
+    const team = player.teamRef;
+    const goalBase = player.goals + (player.generic ? 0.12 : 0.35);
+    const score =
+      goalBase ** 2.15 *
+      (1 + team.expectedFutureGoals * 0.18 + team.remainingMatches * 0.08) +
+      player.scoringMatches * 0.12 +
+      Math.max(0, team.performanceScore) * 0.015;
+    return toAwardCandidate(player, score);
+  });
+  return normalizeAwardCandidates(candidates);
+}
+
+function buildGoldenBallCandidates(context) {
+  const candidates = context.players.map((player) => {
+    const team = player.teamRef;
+    const score =
+      (player.generic ? 0.7 : 1.2) +
+      player.goals * 2.6 +
+      player.scoringMatches * 0.6 +
+      team.performanceScore * 0.55 +
+      team.expectedFutureGoals * 0.24 +
+      team.cleanSheets * 0.18;
+    return toAwardCandidate(player, score);
+  });
+  return normalizeAwardCandidates(candidates);
+}
+
+function buildGoldenGloveCandidates(context) {
+  const candidates = context.teams.map((team) => {
+    const concededPerMatch = team.played ? team.goalsAgainst / team.played : 1.2;
+    const name = `${team.name}主力门将`;
+    const score =
+      0.8 +
+      team.cleanSheets * 2.4 +
+      Math.max(0, 2.1 - concededPerMatch) * 1.6 +
+      team.points * 0.35 +
+      team.expectedFuturePoints * 0.38 +
+      team.remainingMatches * 0.16 +
+      Math.max(0, team.goalDiff || 0) * 0.16;
+    return {
+      name,
+      team: team.name,
+      probability: 0,
+      score: Math.max(0.02, score),
+    };
+  });
+  return normalizeAwardCandidates(candidates);
+}
+
+function toAwardCandidate(player, score) {
+  return {
+    name: player.name,
+    team: player.team,
+    goals: player.goals,
+    probability: 0,
+    score: Math.max(0.02, score),
+  };
+}
+
+function normalizeAwardCandidates(candidates) {
+  const merged = new Map();
+  candidates.forEach((candidate) => {
+    if (!candidate.name) return;
+    const key = `${normalizeAwardKey(candidate.name)}:${normalizeAwardKey(candidate.team)}`;
+    const existing = merged.get(key);
+    if (existing) {
+      existing.score += candidate.score;
+      existing.goals = Math.max(existing.goals || 0, candidate.goals || 0);
+    } else {
+      merged.set(key, { ...candidate });
+    }
+  });
+
+  const list = [...merged.values()].filter((candidate) => Number.isFinite(candidate.score) && candidate.score > 0);
+  const total = list.reduce((sum, candidate) => sum + candidate.score, 0) || 1;
+  return list
+    .map((candidate) => ({
+      ...candidate,
+      probability: candidate.score / total,
+    }))
+    .sort((a, b) => b.probability - a.probability || (b.goals || 0) - (a.goals || 0));
+}
+
+function normalizeAwardKey(...values) {
+  return values
+    .map((value) => cleanText(value).toLocaleLowerCase().replace(/\s+/g, ""))
+    .filter(Boolean)
+    .join(":");
+}
+
 function renderPredictionLists() {
   if (els.leaderboardList) els.leaderboardList.innerHTML = renderLeaderboard();
   els.myPredictionsList.innerHTML = renderPredictionList({
@@ -2892,6 +3382,18 @@ function isPastUnresolvedMatch(match) {
   if (isFinishedMatch(match) || match.liveStatus === "LIVE") return false;
   const kickoff = getKickoffTime(match);
   return Number.isFinite(kickoff) && kickoff < Date.now() - 30 * 60 * 1000;
+}
+
+function isFutureOrLiveMatch(match) {
+  if (isFinishedMatch(match)) return false;
+  if (match.liveStatus === "LIVE") return true;
+  const kickoff = getKickoffTime(match);
+  return !Number.isFinite(kickoff) || kickoff >= Date.now();
+}
+
+function isAwardSettledMatch(match) {
+  if (isFinishedMatch(match)) return true;
+  return hasResult(match) && getKickoffTime(match) < Date.now();
 }
 
 function isUpcomingMatch(match, referenceMs = state.referenceAt.getTime()) {
@@ -3233,6 +3735,8 @@ function normalizeWorldCup26Game(game) {
     lambdaHome: model.lambdaHome,
     lambdaAway: model.lambdaAway,
     result,
+    homeScorers: normalizeWorldCup26Scorers(game.home_scorers),
+    awayScorers: normalizeWorldCup26Scorers(game.away_scorers),
     generatedAt: new Date().toISOString(),
     source: "WorldCup26 live API + team strength/style model",
     liveStatus: normalizeWorldCup26Status(game),
@@ -3247,6 +3751,32 @@ function normalizeWorldCup26Result(game) {
   if (!finished && (!Number.isFinite(home) || !Number.isFinite(away))) return undefined;
   if (Number.isFinite(home) && Number.isFinite(away)) return { home, away };
   return undefined;
+}
+
+function normalizeWorldCup26Scorers(value) {
+  const text = cleanText(value);
+  if (!text || text.toLowerCase() === "null") return [];
+  return text
+    .replace(/[{}]/g, "")
+    .split(/","|“,”|â€,â€|,/)
+    .map(cleanScorerEntry)
+    .filter(Boolean);
+}
+
+function cleanScorerEntry(value) {
+  const text = cleanText(value)
+    .replace(/^["'“”â€œâ€]+|["'“”â€œâ€]+$/g, "")
+    .replace(/\\"/g, "")
+    .replace(/\\u[\dA-Fa-f]{4}/g, "")
+    .trim();
+  if (!text || /(^|[\s(])og[\s)]|own goal/i.test(text)) return "";
+  return text
+    .replace(/\([^)]*\b(?:p|pen)\b[^)]*\)/gi, "")
+    .replace(/\b\d{1,3}'?\+\d{1,2}'?/g, "")
+    .replace(/\b\d{1,3}(?:\+\d{1,2})?'?/g, "")
+    .replace(/[()]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function normalizeWorldCup26Status(game) {
@@ -3357,12 +3887,19 @@ function normalizeMatch(raw, index) {
     lambdaHome: safeLambda(raw.lambdaHome ?? raw.homeLambda ?? raw.expectedHomeGoals, 1.25),
     lambdaAway: safeLambda(raw.lambdaAway ?? raw.awayLambda ?? raw.expectedAwayGoals, 1.05),
     result,
+    homeScorers: normalizeStoredScorers(raw.homeScorers ?? raw.home_scorers),
+    awayScorers: normalizeStoredScorers(raw.awayScorers ?? raw.away_scorers),
     odds,
     generatedAt: raw.generatedAt || raw.snapshotAt || raw.kickoffUtc || date.toISOString(),
     source: String(raw.source || "导入数据"),
     liveStatus: raw.liveStatus ? String(raw.liveStatus) : undefined,
     rawLocalDate: raw.rawLocalDate ? String(raw.rawLocalDate) : undefined,
   };
+}
+
+function normalizeStoredScorers(value) {
+  if (Array.isArray(value)) return value.map(cleanText).filter(Boolean);
+  return normalizeWorldCup26Scorers(value);
 }
 
 function readTeam(raw, side) {

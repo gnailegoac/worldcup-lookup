@@ -149,6 +149,84 @@ create trigger match_results_set_updated_at
   for each row
   execute function public.set_updated_at();
 
+create table if not exists public.award_predictions (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  award_type text not null check (award_type in ('golden_ball', 'golden_boot', 'golden_glove')),
+  display_name text,
+  candidate_name text not null,
+  candidate_team text,
+  model_probability numeric,
+  model_snapshot_at timestamptz,
+  is_public boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint award_predictions_model_probability_check check (
+    model_probability is null or (model_probability >= 0 and model_probability <= 1)
+  ),
+  constraint award_predictions_public_only_check check (is_public = true),
+  constraint award_predictions_one_per_user_award unique (user_id, award_type)
+);
+
+alter table public.award_predictions
+  add column if not exists display_name text;
+
+alter table public.award_predictions
+  add column if not exists model_probability numeric;
+
+alter table public.award_predictions
+  add column if not exists model_snapshot_at timestamptz;
+
+update public.award_predictions
+  set is_public = true
+  where is_public = false;
+
+alter table public.award_predictions
+  alter column is_public set default true;
+
+create index if not exists award_predictions_user_created_idx
+  on public.award_predictions (user_id, created_at desc);
+
+create index if not exists award_predictions_public_created_idx
+  on public.award_predictions (is_public, created_at desc);
+
+alter table public.award_predictions enable row level security;
+
+drop policy if exists "Users can read public award predictions" on public.award_predictions;
+create policy "Users can read public award predictions"
+  on public.award_predictions
+  for select
+  to authenticated
+  using (is_public = true or auth.uid() = user_id);
+
+drop policy if exists "Users can insert own award predictions" on public.award_predictions;
+create policy "Users can insert own award predictions"
+  on public.award_predictions
+  for insert
+  to authenticated
+  with check (auth.uid() = user_id and is_public = true);
+
+drop policy if exists "Users can update own award predictions" on public.award_predictions;
+create policy "Users can update own award predictions"
+  on public.award_predictions
+  for update
+  to authenticated
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id and is_public = true);
+
+drop policy if exists "Users can delete own award predictions" on public.award_predictions;
+create policy "Users can delete own award predictions"
+  on public.award_predictions
+  for delete
+  to authenticated
+  using (auth.uid() = user_id);
+
+drop trigger if exists award_predictions_set_updated_at on public.award_predictions;
+create trigger award_predictions_set_updated_at
+  before update on public.award_predictions
+  for each row
+  execute function public.set_updated_at();
+
 create table if not exists public.user_profiles (
   user_id uuid primary key references auth.users(id) on delete cascade,
   username text not null,
@@ -585,6 +663,7 @@ set search_path = public
 as $$
 declare
   deleted_count integer;
+  deleted_award_count integer;
 begin
   if not public.is_admin() then
     raise exception 'not authorized' using errcode = '42501';
@@ -594,7 +673,12 @@ begin
   where predictions.user_id = target_user_id;
 
   get diagnostics deleted_count = row_count;
-  return deleted_count;
+
+  delete from public.award_predictions award_predictions
+  where award_predictions.user_id = target_user_id;
+
+  get diagnostics deleted_award_count = row_count;
+  return deleted_count + deleted_award_count;
 end;
 $$;
 

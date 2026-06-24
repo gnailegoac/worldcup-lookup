@@ -744,6 +744,133 @@ h1 {
   max-width: 100%;
 }
 
+.awards-panel {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.award-subtitle {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 750;
+}
+
+.award-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.award-card {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fbfcfd;
+}
+
+.award-card-head {
+  display: grid;
+  gap: 4px;
+}
+
+.award-card-head strong {
+  display: block;
+  font-size: 1rem;
+  font-weight: 950;
+}
+
+.award-card-head span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 750;
+  line-height: 1.45;
+}
+
+.award-candidates {
+  display: grid;
+  gap: 8px;
+}
+
+.award-candidate {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px 8px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #ffffff;
+}
+
+.award-candidate strong,
+.award-candidate span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.award-candidate > span:nth-child(3) {
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 750;
+}
+
+.award-rank,
+.award-probability {
+  color: var(--accent);
+  font-weight: 950;
+}
+
+.award-candidate .mini-track {
+  grid-column: 2 / 4;
+}
+
+.award-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: end;
+  min-width: 0;
+}
+
+.award-form label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.award-form select {
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0 8px;
+}
+
+.award-my-pick,
+.award-public-picks {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
 .predictions-area {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -1187,6 +1314,7 @@ h1 {
 
   .account-controls,
   .prediction-controls,
+  .award-grid,
   .predictions-area {
     grid-template-columns: 1fr;
   }
@@ -1239,6 +1367,15 @@ h1 {
 
   .leaderboard-row {
     grid-template-columns: 44px minmax(0, 1fr);
+  }
+
+  .award-form,
+  .award-candidate {
+    grid-template-columns: 1fr;
+  }
+
+  .award-candidate .mini-track {
+    grid-column: 1;
   }
 
   .leaderboard-accuracy,
