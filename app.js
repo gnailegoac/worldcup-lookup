@@ -9,6 +9,7 @@ const SUPABASE_SESSION_STORAGE = "worldcup_probability_supabase_session_v1";
 const USERNAME_STORAGE = "worldcup_probability_username_v1";
 const INTERNAL_AUTH_EMAIL_DOMAIN = "@users.worldcup-lookup.app";
 const WORLDCUP26_GAMES_URL = "https://worldcup26.ir/get/games";
+const SCHEDULE_CACHE_URL = "data/worldcup26-games.json";
 const THE_ODDS_API_BASE = "https://api.the-odds-api.com/v4";
 const DEMO_REFERENCE_AT = "2026-06-22T16:00:00Z";
 const MAX_EXACT_GOALS = 6;
@@ -17,7 +18,7 @@ const SHOW_ADMIN_TOOLS = false;
 const AUTO_SCHEDULE_SYNC_MAX_AGE_MS = 15 * 60 * 1000;
 const PENDING_RESULT_RETRY_MS = 60 * 1000;
 const MIN_LIVE_SCHEDULE_MATCHES = 60;
-const LIVE_SCHEDULE_FORMAT_VERSION = "official-full-schedule-style-nocache-20260624";
+const LIVE_SCHEDULE_FORMAT_VERSION = "official-full-schedule-cache-fallback-20260624";
 const BEIJING_TIME_ZONE = "Asia/Shanghai";
 const BEIJING_OFFSET_MINUTES = 8 * 60;
 const WORLDCUP26_STADIUMS = {
@@ -987,16 +988,15 @@ async function syncWorldCupSchedule(options = {}) {
   if (!silent) renderLiveStatus();
 
   try {
-    const payload = await fetchJson(WORLDCUP26_GAMES_URL, { cacheBust: true });
-    const liveMatches = normalizeWorldCup26Payload(payload);
-    if (!liveMatches.length) throw new Error("接口没有返回可识别的比赛数据");
+    const scheduleData = await fetchScheduleData();
+    const liveMatches = scheduleData.matches;
 
     const summary = replaceScheduleMatches(liveMatches, { preserveModel: true });
     const syncedAt = new Date().toISOString();
     state.liveMeta = {
       ...state.liveMeta,
       scheduleSyncedAt: syncedAt,
-      scheduleSource: WORLDCUP26_GAMES_URL,
+      scheduleSource: scheduleData.source,
       scheduleFormatVersion: LIVE_SCHEDULE_FORMAT_VERSION,
       lastError: "",
       lastScheduleCount: liveMatches.length,
@@ -1016,6 +1016,31 @@ async function syncWorldCupSchedule(options = {}) {
     render();
     schedulePendingResultRetry();
   }
+}
+
+async function fetchScheduleData() {
+  const sources = [
+    { url: SCHEDULE_CACHE_URL, label: "published schedule cache" },
+    { url: WORLDCUP26_GAMES_URL, label: WORLDCUP26_GAMES_URL },
+  ];
+  const errors = [];
+  let fallback = null;
+
+  for (const source of sources) {
+    try {
+      const payload = await fetchJson(source.url, { cacheBust: true });
+      const matches = normalizeWorldCup26Payload(payload);
+      if (!matches.length) throw new Error("没有返回可识别的比赛数据");
+      const data = { matches, source: source.label };
+      if (!matches.some(isPastUnresolvedMatch) || source.url === WORLDCUP26_GAMES_URL) return data;
+      fallback = fallback || data;
+    } catch (error) {
+      errors.push(`${source.label}: ${getErrorMessage(error)}`);
+    }
+  }
+
+  if (fallback) return fallback;
+  throw new Error(errors.join("；") || "没有可用的赛程数据源");
 }
 
 async function maybeAutoSyncSchedule() {
