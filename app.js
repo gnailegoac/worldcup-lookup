@@ -10,6 +10,7 @@ const USERNAME_STORAGE = "worldcup_probability_username_v1";
 const INTERNAL_AUTH_EMAIL_DOMAIN = "@users.worldcup-lookup.app";
 const WORLDCUP26_GAMES_URL = "https://worldcup26.ir/get/games";
 const SCHEDULE_CACHE_URL = "data/worldcup26-games.json";
+const POLYMARKET_ODDS_CACHE_URL = "data/polymarket-odds.json";
 const THE_ODDS_API_BASE = "https://api.the-odds-api.com/v4";
 const DEMO_REFERENCE_AT = "2026-06-22T16:00:00Z";
 const MAX_EXACT_GOALS = 6;
@@ -63,6 +64,7 @@ const TEAM_NAME_ZH = {
   "Bosnia and Herzegovina": "波黑",
   Brazil: "巴西",
   Canada: "加拿大",
+  "Cabo Verde": "佛得角",
   "Cape Verde": "佛得角",
   Colombia: "哥伦比亚",
   Croatia: "克罗地亚",
@@ -70,6 +72,7 @@ const TEAM_NAME_ZH = {
   Curacao: "库拉索",
   "Czech Republic": "捷克",
   "Democratic Republic of the Congo": "刚果民主共和国",
+  "DR Congo": "刚果民主共和国",
   Ecuador: "厄瓜多尔",
   Egypt: "埃及",
   England: "英格兰",
@@ -80,6 +83,8 @@ const TEAM_NAME_ZH = {
   Iran: "伊朗",
   Iraq: "伊拉克",
   "Ivory Coast": "科特迪瓦",
+  "Cote d'Ivoire": "科特迪瓦",
+  "Côte d'Ivoire": "科特迪瓦",
   Japan: "日本",
   Jordan: "约旦",
   Mexico: "墨西哥",
@@ -116,6 +121,7 @@ const TEAM_CODE_OVERRIDES = {
   "Bosnia and Herzegovina": "BIH",
   Brazil: "BRA",
   Canada: "CAN",
+  "Cabo Verde": "CPV",
   "Cape Verde": "CPV",
   Colombia: "COL",
   Croatia: "CRO",
@@ -123,6 +129,7 @@ const TEAM_CODE_OVERRIDES = {
   Curacao: "CUW",
   "Czech Republic": "CZE",
   "Democratic Republic of the Congo": "COD",
+  "DR Congo": "COD",
   Ecuador: "ECU",
   Egypt: "EGY",
   England: "ENG",
@@ -133,6 +140,8 @@ const TEAM_CODE_OVERRIDES = {
   Iran: "IRN",
   Iraq: "IRQ",
   "Ivory Coast": "CIV",
+  "Cote d'Ivoire": "CIV",
+  "Côte d'Ivoire": "CIV",
   Japan: "JPN",
   Jordan: "JOR",
   Mexico: "MEX",
@@ -725,6 +734,7 @@ function init() {
   if (supabaseConfig.url && supabaseConfig.anonKey) {
     connectSupabase();
   }
+  loadPolymarketOddsCache({ silent: true });
   maybeAutoSyncSchedule();
 }
 
@@ -1040,6 +1050,7 @@ async function syncWorldCupSchedule(options = {}) {
     persistLiveMeta();
     persistMatches();
     renderGroupOptions();
+    await loadPolymarketOddsCache({ silent: true });
   } catch (error) {
     const message = getErrorMessage(error);
     state.liveMeta = { ...state.liveMeta, lastError: `赛程同步失败：${message}` };
@@ -1075,6 +1086,183 @@ async function fetchScheduleData() {
 
   if (fallback) return fallback;
   throw new Error(errors.join("；") || "没有可用的赛程数据源");
+}
+
+async function loadPolymarketOddsCache(options = {}) {
+  const silent = options?.silent === true;
+  try {
+    const payload = await fetchJson(POLYMARKET_ODDS_CACHE_URL, { cacheBust: true });
+    const summary = mergePolymarketOddsCache(payload);
+    if (!summary.updated) return summary;
+
+    state.liveMeta = {
+      ...state.liveMeta,
+      polymarketOddsSyncedAt: payload.generatedAt || new Date().toISOString(),
+      polymarketOddsCount: summary.updated,
+    };
+    persistLiveMeta();
+    persistMatches();
+    renderGroupOptions();
+    render();
+    return summary;
+  } catch (error) {
+    if (!silent) {
+      state.notice = `Polymarket odds sync failed: ${getErrorMessage(error)}`;
+      render();
+    }
+    return { total: 0, updated: 0, error };
+  }
+}
+
+function mergePolymarketOddsCache(payload) {
+  const items = (Array.isArray(payload?.matches) ? payload.matches : [])
+    .map(normalizePolymarketCacheMatch)
+    .filter(Boolean);
+  let updated = 0;
+
+  items.forEach((item) => {
+    const index = findPolymarketMatchIndex(item);
+    if (index < 0) return;
+    state.matches[index] = applyPolymarketOdds(state.matches[index], item);
+    updated += 1;
+  });
+
+  if (updated) state.matches = state.matches.sort(sortAscending);
+  return { total: items.length, updated };
+}
+
+function normalizePolymarketCacheMatch(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const kickoff = new Date(raw.kickoffUtc || raw.startTime || raw.start_time || "");
+  const wdl = normalizePolymarketWdl(raw.wdl);
+  const exactScore = normalizePolymarketExactScore(raw.exactScore || raw.exact_score);
+  if (!wdl && !exactScore) return null;
+  return {
+    matchId: cleanText(raw.matchId || raw.match_id),
+    kickoffUtc: Number.isNaN(kickoff.getTime()) ? "" : kickoff.toISOString(),
+    homeAlt: cleanText(raw.homeAlt || raw.home || raw.homeTeam),
+    awayAlt: cleanText(raw.awayAlt || raw.away || raw.awayTeam),
+    homeCode: cleanText(raw.homeCode || raw.home_code),
+    awayCode: cleanText(raw.awayCode || raw.away_code),
+    matchedBy: cleanText(raw.matchedBy),
+    wdl,
+    exactScore,
+  };
+}
+
+function normalizePolymarketWdl(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const homeWin = Number(raw.homeWin ?? raw.home);
+  const draw = Number(raw.draw);
+  const awayWin = Number(raw.awayWin ?? raw.away);
+  const total = homeWin + draw + awayWin;
+  if (![homeWin, draw, awayWin, total].every(Number.isFinite) || total <= 0) return null;
+  return {
+    homeWin: clampProbability(homeWin / total),
+    draw: clampProbability(draw / total),
+    awayWin: clampProbability(awayWin / total),
+    raw: raw.raw || null,
+    eventSlug: cleanText(raw.eventSlug || raw.event_slug),
+    updatedAt: cleanText(raw.updatedAt || raw.updated_at),
+  };
+}
+
+function normalizePolymarketExactScore(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const scores = (Array.isArray(raw.scores) ? raw.scores : [])
+    .map((item) => ({
+      home: Number(item.home),
+      away: Number(item.away),
+      probability: Number(item.probability),
+      rawProbability: Number(item.rawProbability ?? item.raw_probability ?? item.probability),
+      marketSlug: cleanText(item.marketSlug || item.market_slug),
+    }))
+    .filter(
+      (item) =>
+        Number.isInteger(item.home) &&
+        Number.isInteger(item.away) &&
+        item.home >= 0 &&
+        item.away >= 0 &&
+        Number.isFinite(item.probability) &&
+        item.probability > 0,
+    );
+  const otherProbability = Number(raw.otherProbability ?? raw.other_probability ?? 0);
+  const other = Number.isFinite(otherProbability) ? otherProbability : 0;
+  const total = scores.reduce((sum, item) => sum + item.probability, 0) + other;
+  if (!scores.length || !Number.isFinite(total) || total <= 0) return null;
+  return {
+    scores: scores.map((item) => ({
+      ...item,
+      probability: clampProbability(item.probability / total),
+    })),
+    otherProbability: clampProbability(other / total),
+    eventSlug: cleanText(raw.eventSlug || raw.event_slug),
+    updatedAt: cleanText(raw.updatedAt || raw.updated_at),
+  };
+}
+
+function findPolymarketMatchIndex(item) {
+  if (item.matchId) {
+    const byId = state.matches.findIndex((match) => match.id === item.matchId);
+    if (byId >= 0) return byId;
+  }
+
+  const homeKey = normalizeTeamKey(item.homeAlt, item.homeAlt, item.homeCode);
+  const awayKey = normalizeTeamKey(item.awayAlt, item.awayAlt, item.awayCode);
+  const kickoffMs = new Date(item.kickoffUtc || 0).getTime();
+  if (homeKey && awayKey) {
+    const byTeams = state.matches.findIndex((match) => {
+      const sameTeams =
+        normalizeTeamKey(match.home, match.homeAlt, match.homeCode) === homeKey &&
+        normalizeTeamKey(match.away, match.awayAlt, match.awayCode) === awayKey;
+      if (!sameTeams) return false;
+      const matchMs = new Date(match.kickoffUtc).getTime();
+      return !Number.isFinite(kickoffMs) || !Number.isFinite(matchMs) || Math.abs(matchMs - kickoffMs) <= 18 * 60 * 60 * 1000;
+    });
+    if (byTeams >= 0) return byTeams;
+  }
+
+  if (!Number.isFinite(kickoffMs)) return -1;
+  const timeMatches = state.matches
+    .map((match, index) => ({ match, index, delta: Math.abs(new Date(match.kickoffUtc).getTime() - kickoffMs) }))
+    .filter((item) => Number.isFinite(item.delta) && item.delta <= 15 * 60 * 1000);
+  if (timeMatches.length === 1 && hasPlaceholderTeam(timeMatches[0].match)) return timeMatches[0].index;
+  return -1;
+}
+
+function applyPolymarketOdds(match, item) {
+  const next = {
+    ...match,
+    polymarket: {
+      wdl: item.wdl,
+      exactScore: item.exactScore,
+      matchedBy: item.matchedBy,
+      kickoffUtc: item.kickoffUtc,
+    },
+    source: joinSources(match.source, "Polymarket"),
+  };
+
+  if (hasPlaceholderTeam(match) && item.homeAlt && item.awayAlt) {
+    next.home = localizeTeamName(item.homeAlt);
+    next.homeAlt = item.homeAlt;
+    next.homeCode = item.homeCode || codeFromName(item.homeAlt);
+    next.away = localizeTeamName(item.awayAlt);
+    next.awayAlt = item.awayAlt;
+    next.awayCode = item.awayCode || codeFromName(item.awayAlt);
+  }
+
+  if (item.wdl) {
+    const estimate = estimateLambdasFromProbabilities(item.wdl.homeWin, item.wdl.draw, item.wdl.awayWin);
+    next.lambdaHome = estimate.lambdaHome;
+    next.lambdaAway = estimate.lambdaAway;
+  }
+
+  return next;
+}
+
+function hasPlaceholderTeam(match) {
+  const text = `${match.home} ${match.away} ${match.homeAlt} ${match.awayAlt}`.toLowerCase();
+  return /winner|runner-up|3rd group|loser|match \d+|tbd|to be decided/.test(text);
 }
 
 async function maybeAutoSyncSchedule() {
@@ -2367,6 +2555,7 @@ function mergeMatch(existing, incoming, preserveModel) {
     lambdaHome: keepExistingModel ? existing.lambdaHome : incoming.lambdaHome,
     lambdaAway: keepExistingModel ? existing.lambdaAway : incoming.lambdaAway,
     odds: incoming.odds || existing.odds,
+    polymarket: incoming.polymarket || existing.polymarket,
     result: incoming.result || existing.result,
     generatedAt: incoming.generatedAt || existing.generatedAt,
     source: joinSources(existing.source, incoming.source),
@@ -3505,10 +3694,18 @@ function getStrongestLean(match) {
 function computeProbability(match) {
   const homeLambda = safeLambda(match.lambdaHome, 1.25);
   const awayLambda = safeLambda(match.lambdaAway, 1.05);
-  const outcome = outcomeFromLambdas(homeLambda, awayLambda);
+  const marketWdl = getPolymarketWdl(match);
+  const marketExact = getPolymarketExactScore(match);
+  const outcome = marketWdl || outcomeFromLambdas(homeLambda, awayLambda);
 
   const homeExact = poissonDistribution(homeLambda, MAX_EXACT_GOALS);
   const awayExact = poissonDistribution(awayLambda, MAX_EXACT_GOALS);
+  const listedScoreKeys = new Set((marketExact?.scores || []).map((score) => scoreKey(score.home, score.away)));
+  const listedModelMass = marketExact
+    ? marketExact.scores.reduce((sum, score) => sum + poisson(homeLambda, score.home) * poisson(awayLambda, score.away), 0)
+    : 0;
+  const unlistedModelMass = Math.max(0.000001, 1 - listedModelMass);
+  const exactScoreMap = new Map((marketExact?.scores || []).map((score) => [scoreKey(score.home, score.away), score.probability]));
   const matrix = [];
   const topScores = [];
   let gridMass = 0;
@@ -3516,7 +3713,13 @@ function computeProbability(match) {
   for (let home = 0; home <= MAX_EXACT_GOALS; home += 1) {
     matrix[home] = [];
     for (let away = 0; away <= MAX_EXACT_GOALS; away += 1) {
-      const probability = homeExact[home] * awayExact[away];
+      const modelProbability = homeExact[home] * awayExact[away];
+      const key = scoreKey(home, away);
+      const probability =
+        exactScoreMap.get(key) ??
+        (marketExact && !listedScoreKeys.has(key)
+          ? (marketExact.otherProbability * modelProbability) / unlistedModelMass
+          : modelProbability);
       gridMass += probability;
       matrix[home][away] = { home, away, probability };
       topScores.push({ home, away, probability });
@@ -3595,6 +3798,14 @@ function estimateLambdasFromOdds(homeOdds, drawOdds, awayOdds) {
   return best;
 }
 
+function estimateLambdasFromProbabilities(homeWin, draw, awayWin) {
+  const probabilities = [homeWin, draw, awayWin].map(Number);
+  const total = probabilities.reduce((sum, value) => sum + (Number.isFinite(value) && value > 0 ? value : 0), 0);
+  if (!Number.isFinite(total) || total <= 0) return { lambdaHome: 1.25, lambdaAway: 1.05, error: Infinity };
+  const odds = probabilities.map((value) => (Number.isFinite(value) && value > 0 ? total / value : Infinity));
+  return estimateLambdasFromOdds(odds[0], odds[1], odds[2]);
+}
+
 function searchLambdaGrid(target, homeMin, homeMax, step, awayMin = homeMin, awayMax = homeMax) {
   let best = { lambdaHome: 1.25, lambdaAway: 1.05, error: Infinity };
   for (let home = homeMin; home <= homeMax + 0.0001; home += step) {
@@ -3619,7 +3830,66 @@ function searchLambdaGrid(target, homeMin, homeMax, step, awayMin = homeMin, awa
 function scoreProbability(match, homeScore, awayScore) {
   const homeLambda = safeLambda(match.lambdaHome, 1.25);
   const awayLambda = safeLambda(match.lambdaAway, 1.05);
-  return poisson(homeLambda, homeScore) * poisson(awayLambda, awayScore);
+  const modelProbability = poisson(homeLambda, homeScore) * poisson(awayLambda, awayScore);
+  const marketExact = getPolymarketExactScore(match);
+  if (!marketExact) return modelProbability;
+
+  const explicitScore = marketExact.scores.find((score) => score.home === homeScore && score.away === awayScore);
+  if (explicitScore) return explicitScore.probability;
+
+  const listedModelMass = marketExact.scores.reduce(
+    (sum, score) => sum + poisson(homeLambda, score.home) * poisson(awayLambda, score.away),
+    0,
+  );
+  const unlistedModelMass = Math.max(0.000001, 1 - listedModelMass);
+  return (marketExact.otherProbability * modelProbability) / unlistedModelMass;
+}
+
+function getPolymarketWdl(match) {
+  const wdl = match?.polymarket?.wdl;
+  if (!wdl) return null;
+  const homeWin = Number(wdl.homeWin);
+  const draw = Number(wdl.draw);
+  const awayWin = Number(wdl.awayWin);
+  const total = homeWin + draw + awayWin;
+  if (![homeWin, draw, awayWin, total].every(Number.isFinite) || total <= 0) return null;
+  return {
+    homeWin: clampProbability(homeWin / total),
+    draw: clampProbability(draw / total),
+    awayWin: clampProbability(awayWin / total),
+  };
+}
+
+function getPolymarketExactScore(match) {
+  const exactScore = match?.polymarket?.exactScore;
+  if (!exactScore || !Array.isArray(exactScore.scores)) return null;
+  const scores = exactScore.scores
+    .map((score) => ({
+      home: Number(score.home),
+      away: Number(score.away),
+      probability: Number(score.probability),
+    }))
+    .filter(
+      (score) =>
+        Number.isInteger(score.home) &&
+        Number.isInteger(score.away) &&
+        score.home >= 0 &&
+        score.away >= 0 &&
+        Number.isFinite(score.probability) &&
+        score.probability > 0,
+    );
+  const otherProbability = Number(exactScore.otherProbability);
+  const other = Number.isFinite(otherProbability) ? otherProbability : 0;
+  const total = scores.reduce((sum, score) => sum + score.probability, 0) + other;
+  if (!scores.length || !Number.isFinite(total) || total <= 0) return null;
+  return {
+    scores: scores.map((score) => ({ ...score, probability: clampProbability(score.probability / total) })),
+    otherProbability: clampProbability(other / total),
+  };
+}
+
+function scoreKey(home, away) {
+  return `${home}-${away}`;
 }
 
 function estimateLambdasFromTeamStrength(homeName, awayName) {
@@ -3672,6 +3942,12 @@ function safeLambda(value, fallback) {
 
 function clampNumber(value, min, max) {
   return Math.min(max, Math.max(min, value));
+}
+
+function clampProbability(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 0;
+  return Math.min(1, Math.max(0, number));
 }
 
 function roundToTwo(value) {
@@ -3899,6 +4175,7 @@ function normalizeMatch(raw, index) {
     homeScorers: normalizeStoredScorers(raw.homeScorers ?? raw.home_scorers),
     awayScorers: normalizeStoredScorers(raw.awayScorers ?? raw.away_scorers),
     odds,
+    polymarket: normalizeStoredPolymarket(raw.polymarket),
     generatedAt: raw.generatedAt || raw.snapshotAt || raw.kickoffUtc || date.toISOString(),
     source: String(raw.source || "导入数据"),
     liveStatus: raw.liveStatus ? String(raw.liveStatus) : undefined,
@@ -3946,6 +4223,19 @@ function normalizeOdds(value) {
     return { home, draw, away };
   }
   return undefined;
+}
+
+function normalizeStoredPolymarket(value) {
+  if (!value || typeof value !== "object") return undefined;
+  const wdl = normalizePolymarketWdl(value.wdl);
+  const exactScore = normalizePolymarketExactScore(value.exactScore || value.exact_score);
+  if (!wdl && !exactScore) return undefined;
+  return {
+    wdl,
+    exactScore,
+    matchedBy: cleanText(value.matchedBy),
+    kickoffUtc: cleanText(value.kickoffUtc),
+  };
 }
 
 function importData(event) {

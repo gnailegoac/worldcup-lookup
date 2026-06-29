@@ -24,11 +24,15 @@ jobs:
             -o data/worldcup26-games.json
           node -e "const fs=require('fs'); const payload=JSON.parse(fs.readFileSync('data/worldcup26-games.json','utf8')); const games=payload.games||payload.data||payload; if (!Array.isArray(games) || games.length < 60) throw new Error('Invalid schedule payload');"
 
+      - name: Fetch Polymarket odds cache
+        continue-on-error: true
+        run: node scripts/sync-polymarket-odds.mjs data/worldcup26-games.json data/polymarket-odds.json
+
       - name: Commit schedule cache
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/worldcup26-games.json
+          git add data/worldcup26-games.json data/polymarket-odds.json
           git diff --cached --quiet || git commit -m "Update World Cup schedule cache"
           git push
 

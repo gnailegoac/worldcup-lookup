@@ -103,6 +103,31 @@ check("exact score matrix and other score mass are consistent", () => {
   assert(isDescending(probability.topScores.map((item) => item.probability)), "top scores should be sorted");
 });
 
+check("polymarket prices override listed markets and distribute other scores", () => {
+  const match = {
+    lambdaHome: 1.45,
+    lambdaAway: 0.95,
+    polymarket: {
+      wdl: { homeWin: 0.52, draw: 0.27, awayWin: 0.21 },
+      exactScore: {
+        scores: [
+          { home: 1, away: 0, probability: 0.18 },
+          { home: 1, away: 1, probability: 0.13 },
+        ],
+        otherProbability: 0.69,
+      },
+    },
+  };
+  const probability = computeProbability(match);
+  close(probability.homeWin, 0.52, 1e-12);
+  close(probability.draw, 0.27, 1e-12);
+  close(probability.awayWin, 0.21, 1e-12);
+  close(probability.matrix[1][0].probability, 0.18, 1e-12);
+  close(probability.matrix[1][1].probability, 0.13, 1e-12);
+  close(probability.matrix[2][0].probability, scoreProbability(match, 2, 0), 1e-12);
+  close(probability.gridMass + probability.otherScore, 1, 1e-12);
+});
+
 check("odds are normalized without bookmaker margin", () => {
   const noVig = getNoVigProbabilities(2.1, 3.4, 3.8);
   assert(noVig, "valid odds should produce no-vig probabilities");
