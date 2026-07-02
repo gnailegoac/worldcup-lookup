@@ -172,6 +172,25 @@ const TEAM_CODE_OVERRIDES = {
   Uruguay: "URU",
   Uzbekistan: "UZB",
 };
+const CHAMPION_TEAMS = [...new Map(
+  Object.entries(TEAM_CODE_OVERRIDES).map(([teamName, teamCode]) => [
+    teamCode,
+    { code: teamCode, name: TEAM_NAME_ZH[teamName] || teamName },
+  ]),
+).values()].sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
+const ACHIEVEMENT_DEFINITIONS = [
+  { id: "first_prediction", name: "初次登场", mark: "01", description: "提交首个比赛预测" },
+  { id: "triple_hit", name: "三次命中", mark: "03", description: "累计命中 3 次预测" },
+  { id: "ten_hits", name: "十胜记录", mark: "10", description: "累计命中 10 次预测" },
+  { id: "score_oracle", name: "比分先知", mark: "2:1", description: "命中 1 次具体比分" },
+  { id: "combo_master", name: "组合大师", mark: "×", description: "命中 1 次组合预测" },
+  { id: "underdog_hunter", name: "冷门猎手", mark: "25", description: "命中概率不高于 25% 的单场胜负平" },
+  { id: "century_return", name: "百点回响", mark: "100", description: "累计返还达到 100 点" },
+  { id: "precision_player", name: "稳定输出", mark: "60", description: "至少结算 5 次且命中率达到 60%" },
+  { id: "all_rounder", name: "全能玩家", mark: "3型", description: "提交过胜平负、比分和组合预测" },
+  { id: "hot_streak", name: "三连红", mark: "W3", description: "连续命中 3 次已结算预测" },
+];
+const ACHIEVEMENT_IDS = new Set(ACHIEVEMENT_DEFINITIONS.map((achievement) => achievement.id));
 const TEAM_STRENGTH_RATINGS = {
   Argentina: 1980,
   France: 1970,
@@ -661,6 +680,10 @@ const state = {
   predictionNotice: "",
   comboPredictionNotice: "",
   comboSchemaMissing: false,
+  predictionProfile: { championTeamCode: "", achievements: [] },
+  predictionProfileNotice: "",
+  predictionProfileSchemaMissing: false,
+  isSavingChampionPick: false,
   pointBalance: null,
   pointSchemaMissing: false,
   awardPredictionNotice: "",
@@ -705,6 +728,7 @@ const els = {
   loginButton: document.getElementById("loginButton"),
   registerButton: document.getElementById("registerButton"),
   signOutButton: document.getElementById("signOutButton"),
+  predictionProfilePanel: document.getElementById("predictionProfilePanel"),
   refreshPredictionsButton: document.getElementById("refreshPredictionsButton"),
   comboPredictionPanel: document.getElementById("comboPredictionPanel"),
   awardsPanel: document.getElementById("awardsPanel"),
@@ -854,6 +878,11 @@ function bindEvents() {
     if (event.key === "Enter") loginWithUsername();
   });
   els.signOutButton.addEventListener("click", signOut);
+  if (els.predictionProfilePanel) {
+    els.predictionProfilePanel.addEventListener("click", (event) => {
+      if (event.target.closest("[data-action='select-champion-team']")) selectChampionTeam();
+    });
+  }
   els.refreshPredictionsButton.addEventListener("click", loadPredictions);
   if (els.refreshAdminButton) els.refreshAdminButton.addEventListener("click", () => loadAdminData({ force: true }));
   if (els.adminPanel) els.adminPanel.addEventListener("click", handleAdminAction);
@@ -876,6 +905,7 @@ function render() {
   renderTabs();
   renderLiveStatus();
   renderAuthStatus();
+  renderPredictionProfilePanel();
   renderSummary();
   renderList();
   renderDetail(getSelectedMatch());
@@ -934,6 +964,146 @@ function renderAuthStatus() {
   if (els.refreshAdminButton) els.refreshAdminButton.disabled = !state.isAdmin || state.isLoadingAdmin;
   els.loginButton.textContent = state.isAuthBusy ? "处理中..." : "登录";
   els.registerButton.textContent = state.isAuthBusy ? "处理中..." : "注册";
+}
+
+function renderPredictionProfilePanel() {
+  if (!els.predictionProfilePanel) return;
+  const user = state.authSession?.user;
+  els.predictionProfilePanel.hidden = !user;
+  if (!user) {
+    els.predictionProfilePanel.innerHTML = "";
+    els.predictionProfilePanel.classList.remove("is-legendary");
+    return;
+  }
+
+  const championTeam = getChampionTeam(state.predictionProfile.championTeamCode);
+  const achievements = state.predictionProfile.achievements;
+  const isLegendary = achievements.length === ACHIEVEMENT_DEFINITIONS.length;
+  const profileBusy = state.isLoadingPredictions || state.isSavingChampionPick;
+  els.predictionProfilePanel.classList.toggle("is-legendary", isLegendary);
+
+  const championMarkup = championTeam
+    ? `
+      <div class="champion-locked">
+        <span class="champion-code">${escapeHtml(championTeam.code)}</span>
+        <div>
+          <span>我的冠军球队</span>
+          <strong>${escapeHtml(championTeam.name)}</strong>
+        </div>
+        <span class="champion-lock-state">已锁定</span>
+      </div>
+    `
+    : `
+      <div class="champion-picker">
+        <label for="championTeamSelect">冠军球队</label>
+        <select id="championTeamSelect" ${state.predictionProfileSchemaMissing || profileBusy ? "disabled" : ""}>
+          <option value="">选择球队</option>
+          ${CHAMPION_TEAMS.map((team) => `
+            <option value="${escapeHtml(team.code)}">${escapeHtml(team.name)} · ${escapeHtml(team.code)}</option>
+          `).join("")}
+        </select>
+        <button
+          type="button"
+          class="action-button primary"
+          data-action="select-champion-team"
+          ${state.predictionProfileSchemaMissing || profileBusy ? "disabled" : ""}
+        >${state.isSavingChampionPick ? "确认中..." : "确认冠军"}</button>
+        <span class="champion-warning">确认后不可更改</span>
+      </div>
+    `;
+
+  els.predictionProfilePanel.innerHTML = `
+    <div class="prediction-profile-main">
+      ${championMarkup}
+      ${state.predictionProfileNotice ? `<div class="prediction-profile-notice">${escapeHtml(state.predictionProfileNotice)}</div>` : ""}
+    </div>
+    <section class="achievement-profile" aria-label="我的成就">
+      <div class="achievement-profile-head">
+        <div>
+          <span>我的成就</span>
+          <strong>${achievements.length}/${ACHIEVEMENT_DEFINITIONS.length}</strong>
+        </div>
+        <div class="achievement-progress" aria-hidden="true">
+          <span style="width:${(achievements.length / ACHIEVEMENT_DEFINITIONS.length) * 100}%"></span>
+        </div>
+      </div>
+      <div class="achievement-catalog">
+        ${renderAchievementBadges(achievements, { showLocked: true, showDescription: true })}
+      </div>
+      ${isLegendary ? `
+        <div class="legendary-achievement-banner">
+          <span>ALL 10</span>
+          <strong>世界杯预言家</strong>
+          <span>全成就达成</span>
+        </div>
+      ` : ""}
+    </section>
+  `;
+}
+
+function renderAchievementBadges(earnedAchievementIds, options = {}) {
+  const earned = new Set(normalizeAchievementIds(earnedAchievementIds));
+  return ACHIEVEMENT_DEFINITIONS
+    .filter((achievement) => options.showLocked || earned.has(achievement.id))
+    .map((achievement) => {
+      const isEarned = earned.has(achievement.id);
+      return `
+        <span
+          class="achievement-badge achievement-${escapeHtml(achievement.id)} ${isEarned ? "is-earned" : "is-locked"} ${options.showDescription ? "has-description" : ""}"
+          title="${escapeHtml(`${achievement.name}：${achievement.description}`)}"
+          aria-label="${escapeHtml(`${achievement.name}：${achievement.description}${isEarned ? "，已达成" : "，未达成"}`)}"
+        >
+          <span class="achievement-mark" aria-hidden="true">${escapeHtml(achievement.mark)}</span>
+          <span class="achievement-copy">
+            <strong>${escapeHtml(achievement.name)}</strong>
+            ${options.showDescription ? `<small>${escapeHtml(achievement.description)}</small>` : ""}
+          </span>
+        </span>
+      `;
+    })
+    .join("");
+}
+
+async function selectChampionTeam() {
+  if (!state.supabase || !state.authSession?.user || hasChampionPick() || state.isSavingChampionPick) return;
+  if (state.predictionProfileSchemaMissing) {
+    state.predictionProfileNotice = "请先重新运行 supabase/schema.sql。";
+    renderPredictionProfilePanel();
+    return;
+  }
+
+  const select = els.predictionProfilePanel?.querySelector("#championTeamSelect");
+  const teamCode = normalizeChampionTeamCode(select?.value);
+  const team = getChampionTeam(teamCode);
+  if (!team) {
+    state.predictionProfileNotice = "请选择冠军球队。";
+    renderPredictionProfilePanel();
+    return;
+  }
+  if (!window.confirm(`确认选择 ${team.name}（${team.code}）为冠军球队？确认后不能更改。`)) return;
+
+  state.isSavingChampionPick = true;
+  state.predictionProfileNotice = "正在锁定冠军球队...";
+  renderPredictionProfilePanel();
+  const result = await state.supabase.rpc("select_champion_pick", { team_code_value: team.code });
+  state.isSavingChampionPick = false;
+
+  if (isAuthExpiredError(result.error)) {
+    await expireAuthSession();
+    return;
+  }
+  if (result.error) {
+    state.predictionProfileSchemaMissing = isMissingPredictionProfileSchemaError(result.error);
+    state.predictionProfileNotice = state.predictionProfileSchemaMissing
+      ? "请先重新运行 supabase/schema.sql。"
+      : formatPointError(result.error);
+    renderPredictionProfilePanel();
+    return;
+  }
+
+  state.predictionProfile.championTeamCode = normalizeChampionTeamCode(result.data) || team.code;
+  state.predictionProfileNotice = `冠军球队已锁定：${team.name}`;
+  await loadPredictions();
 }
 
 function addMatch() {
@@ -1437,6 +1607,7 @@ async function connectSupabase() {
         state.publicPredictions = [];
         state.myAwardPredictions = [];
         state.awardPredictions = [];
+        resetPredictionProfile();
         resetAdminState();
       }
       loadPredictions();
@@ -1525,6 +1696,7 @@ async function signOut() {
   state.publicPredictions = [];
   state.myAwardPredictions = [];
   state.awardPredictions = [];
+  resetPredictionProfile();
   resetAdminState();
   state.authNotice = error ? state.authNotice : "已退出。";
   await loadPredictions();
@@ -1543,6 +1715,7 @@ function setAuthSession(session) {
     state.pointSchemaMissing = false;
     state.comboPredictionNotice = "";
     state.comboSchemaMissing = false;
+    resetPredictionProfile();
   }
   if (state.authSession) scheduleAuthExpiry(state.authSession);
   return Boolean(state.authSession);
@@ -1583,6 +1756,7 @@ async function expireAuthSession(message = "登录已过期，请重新登录。
   state.publicPredictions = [];
   state.myAwardPredictions = [];
   state.awardPredictions = [];
+  resetPredictionProfile();
   resetAdminState();
   state.isAuthBusy = false;
   state.authStatus = state.supabase ? "Supabase 已连接" : state.authStatus;
@@ -1645,6 +1819,11 @@ async function submitPrediction(match) {
     const refreshed = await refreshAuthSession();
     if (!refreshed) return;
   }
+  if (!hasChampionPick()) {
+    state.predictionNotice = "请先确认冠军球队。";
+    render();
+    return;
+  }
   if (!isMatchPredictable(match)) {
     state.predictionNotice = "只能预测未开赛的比赛。";
     render();
@@ -1693,6 +1872,10 @@ async function submitComboPrediction() {
   if (isSessionExpired(state.authSession)) {
     const refreshed = await refreshAuthSession();
     if (!refreshed) return;
+  }
+  if (!hasChampionPick()) {
+    setComboPredictionNotice("请先确认冠军球队。");
+    return;
   }
 
   const form = els.comboPredictionPanel?.querySelector("[data-combo-form]");
@@ -2051,6 +2234,13 @@ function hashString(value) {
   return (hash >>> 0).toString(36);
 }
 
+function resetPredictionProfile() {
+  state.predictionProfile = { championTeamCode: "", achievements: [] };
+  state.predictionProfileNotice = "";
+  state.predictionProfileSchemaMissing = false;
+  state.isSavingChampionPick = false;
+}
+
 async function loadPredictions() {
   if (!state.supabase) {
     state.myPredictions = [];
@@ -2061,6 +2251,7 @@ async function loadPredictions() {
     state.pointBalance = null;
     state.pointSchemaMissing = false;
     state.comboSchemaMissing = false;
+    resetPredictionProfile();
     state.leaderboardRows = [];
     state.leaderboardNotice = "";
     resetAdminState();
@@ -2073,6 +2264,7 @@ async function loadPredictions() {
   }
   state.isLoadingPredictions = true;
   renderAuthStatus();
+  renderPredictionProfilePanel();
   const user = state.authSession?.user;
 
   const publicQuery = user
@@ -2111,11 +2303,16 @@ async function loadPredictions() {
         .limit(50)
     : Promise.resolve({ data: [], error: null });
 
-  const [publicResult, myResult, awardResult, myAwardResult] = await Promise.all([
+  const predictionProfileQuery = user
+    ? state.supabase.rpc("get_my_prediction_profile")
+    : Promise.resolve({ data: null, error: null });
+
+  const [publicResult, myResult, awardResult, myAwardResult, predictionProfileResult] = await Promise.all([
     publicQuery,
     myQuery,
     awardQuery,
     myAwardQuery,
+    predictionProfileQuery,
   ]);
   state.isLoadingPredictions = false;
 
@@ -2123,7 +2320,8 @@ async function loadPredictions() {
     isAuthExpiredError(publicResult.error) ||
     isAuthExpiredError(myResult.error) ||
     isAuthExpiredError(awardResult.error) ||
-    isAuthExpiredError(myAwardResult.error)
+    isAuthExpiredError(myAwardResult.error) ||
+    isAuthExpiredError(predictionProfileResult.error)
   ) {
     await expireAuthSession();
     return;
@@ -2148,6 +2346,20 @@ async function loadPredictions() {
     state.myAwardPredictions = myAwardResult.data || [];
     state.awardSchemaMissing = false;
     if (/奖项预测/.test(state.awardPredictionNotice)) state.awardPredictionNotice = "";
+  }
+
+  if (predictionProfileResult.error) {
+    state.predictionProfile = { championTeamCode: "", achievements: [] };
+    state.predictionProfileSchemaMissing = isMissingPredictionProfileSchemaError(predictionProfileResult.error);
+    state.predictionProfileNotice = state.predictionProfileSchemaMissing
+      ? "请先更新数据库后选择冠军球队。"
+      : `读取冠军和成就失败：${predictionProfileResult.error.message}`;
+  } else {
+    state.predictionProfile = normalizePredictionProfile(predictionProfileResult.data);
+    state.predictionProfileSchemaMissing = false;
+    if (/读取冠军和成就失败|请先更新数据库/.test(state.predictionProfileNotice)) {
+      state.predictionProfileNotice = "";
+    }
   }
   await loadPointBalance();
   await loadAdminData();
@@ -2213,14 +2425,53 @@ async function loadLeaderboardData() {
 
 function normalizeLeaderboardRows(rows) {
   return rows
-    .map((row) => ({
-      userId: row.user_id || row.userId || "",
-      displayName: cleanText(row.display_name || row.displayName) || `用户 ${shortUserId(row.user_id || row.userId)}`,
-      score: Number(row.cumulative_return_points ?? row.payout_points ?? 0),
-      latestAt: row.latest_return_at || row.latest_prediction_at || row.latestAt || "",
-    }))
+    .map((row) => {
+      const achievements = normalizeAchievementIds(row.achievements);
+      return {
+        userId: row.user_id || row.userId || "",
+        displayName: cleanText(row.display_name || row.displayName) || `用户 ${shortUserId(row.user_id || row.userId)}`,
+        score: Number(row.cumulative_return_points ?? row.payout_points ?? 0),
+        latestAt: row.latest_return_at || row.latest_prediction_at || row.latestAt || "",
+        championTeamCode: normalizeChampionTeamCode(row.champion_team_code || row.championTeamCode),
+        achievements,
+        achievementCount: achievements.length,
+      };
+    })
     .filter((row) => Number.isFinite(row.score) && row.score > 0)
     .sort((a, b) => b.score - a.score || new Date(a.latestAt || 0) - new Date(b.latestAt || 0));
+}
+
+function normalizePredictionProfile(payload) {
+  return {
+    championTeamCode: normalizeChampionTeamCode(payload?.champion_team_code || payload?.championTeamCode),
+    achievements: normalizeAchievementIds(payload?.achievements),
+  };
+}
+
+function normalizeChampionTeamCode(value) {
+  const teamCode = cleanText(value).toUpperCase();
+  return CHAMPION_TEAMS.some((team) => team.code === teamCode) ? teamCode : "";
+}
+
+function normalizeAchievementIds(value) {
+  let items = value;
+  if (typeof items === "string") {
+    try {
+      items = JSON.parse(items);
+    } catch {
+      items = [];
+    }
+  }
+  if (!Array.isArray(items)) return [];
+  return [...new Set(items.map(cleanText).filter((id) => ACHIEVEMENT_IDS.has(id)))];
+}
+
+function getChampionTeam(teamCode) {
+  return CHAMPION_TEAMS.find((team) => team.code === teamCode) || null;
+}
+
+function hasChampionPick() {
+  return Boolean(state.predictionProfile.championTeamCode);
 }
 
 function isMissingSettlementSchemaError(error) {
@@ -2241,9 +2492,18 @@ function isMissingComboPredictionSchemaError(error) {
   );
 }
 
+function isMissingPredictionProfileSchemaError(error) {
+  return /get_my_prediction_profile|select_champion_pick|champion_picks|schema cache|function .* not found|could not find/i.test(
+    `${error?.message || ""} ${error?.details || ""} ${error?.hint || ""}`,
+  );
+}
+
 function formatPointError(error) {
   const message = cleanText(error?.message);
   if (/insufficient points/i.test(message)) return "可用点数不足。";
+  if (/champion pick required/i.test(message)) return "请先确认冠军球队。";
+  if (/champion pick already locked/i.test(message)) return "冠军球队已经锁定，不能更改。";
+  if (/invalid champion team/i.test(message)) return "冠军球队无效，请刷新页面后重试。";
   if (/prediction market unavailable/i.test(message)) return "比赛概率尚未同步，请稍后再试。";
   if (/combo match already started/i.test(message)) return "组合中有比赛已经开始，不能提交。";
   if (/match already started|can no longer be changed/i.test(message)) return "比赛已经开始，不能再提交或修改预测。";
@@ -3279,19 +3539,24 @@ function renderPredictionForm(match) {
   const existingStake = existing?.settled_at ? 0 : Number(existing?.stake_points || 0);
   const allocatablePoints = Math.max(0, Number(state.pointBalance || 0) + existingStake);
   const hasPoints = allocatablePoints >= 1;
-  const disabled = !user || !state.supabase || !canPredict || state.pointSchemaMissing || !hasPoints;
+  const championReady = hasChampionPick();
+  const disabled = !user || !state.supabase || !championReady || state.predictionProfileSchemaMissing || !canPredict || state.pointSchemaMissing || !hasPoints;
   const disabledAttr = disabled ? "disabled" : "";
   const status = !state.supabase
     ? "未连接 Supabase"
     : !user
       ? "登录后可提交预测"
-      : !canPredict
-        ? "比赛已开始或已完赛"
-        : state.pointSchemaMissing
-          ? "点数功能待启用"
-          : !hasPoints
-            ? "点数不足，请联系管理员"
-            : `可分配 ${formatPointAmount(allocatablePoints)}`;
+      : state.predictionProfileSchemaMissing
+        ? "冠军选择功能待启用"
+        : !championReady
+          ? "请先确认冠军球队"
+          : !canPredict
+            ? "比赛已开始或已完赛"
+            : state.pointSchemaMissing
+              ? "点数功能待启用"
+              : !hasPoints
+                ? "点数不足，请联系管理员"
+                : `可分配 ${formatPointAmount(allocatablePoints)}`;
   const predictionType = isScorePrediction(existing || {}) ? "score" : "outcome";
   const outcome = ["home", "draw", "away"].includes(existing?.outcome) ? existing.outcome : "home";
   const predictedHomeScore = hasStoredScore(existing?.home_score) ? Number(existing.home_score) : 1;
@@ -3373,21 +3638,35 @@ function renderComboPredictionPanel() {
     .sort(sortAscending)
     .slice(0, COMBO_MATCH_OPTION_LIMIT);
   const balance = Number(state.pointBalance || 0);
-  const enabled = Boolean(state.supabase && user && !state.pointSchemaMissing && !state.comboSchemaMissing && balance >= 1 && matches.length >= COMBO_MIN_LEGS);
+  const championReady = hasChampionPick();
+  const enabled = Boolean(
+    state.supabase &&
+    user &&
+    championReady &&
+    !state.predictionProfileSchemaMissing &&
+    !state.pointSchemaMissing &&
+    !state.comboSchemaMissing &&
+    balance >= 1 &&
+    matches.length >= COMBO_MIN_LEGS
+  );
   const disabledAttr = enabled ? "" : "disabled";
   const status = !state.supabase
     ? "未连接 Supabase"
     : !user
       ? "登录后可提交"
-      : state.comboSchemaMissing
-        ? "组合预测待启用"
-        : state.pointSchemaMissing
-          ? "组合预测待启用"
-          : balance < 1
-            ? "点数不足，请联系管理员"
-            : matches.length < COMBO_MIN_LEGS
-              ? "暂无足够的未开赛比赛"
-              : `可用 ${formatPointAmount(balance)}`;
+      : state.predictionProfileSchemaMissing
+        ? "冠军选择功能待启用"
+        : !championReady
+          ? "请先确认冠军球队"
+          : state.comboSchemaMissing
+            ? "组合预测待启用"
+            : state.pointSchemaMissing
+              ? "组合预测待启用"
+              : balance < 1
+                ? "点数不足，请联系管理员"
+                : matches.length < COMBO_MIN_LEGS
+                  ? "暂无足够的未开赛比赛"
+                  : `可用 ${formatPointAmount(balance)}`;
   const defaultStake = Math.max(1, Math.min(10, balance));
 
   els.comboPredictionPanel.innerHTML = `
@@ -3950,11 +4229,32 @@ function renderLeaderboard() {
 }
 
 function renderLeaderboardRow(row, index) {
+  const championTeam = getChampionTeam(row.championTeamCode);
+  const isLegendary = row.achievementCount === ACHIEVEMENT_DEFINITIONS.length;
   return `
-    <article class="leaderboard-row">
+    <article class="leaderboard-row ${isLegendary ? "is-legendary" : ""}" data-user-id="${escapeHtml(row.userId)}">
       <span class="leaderboard-rank">#${index + 1}</span>
-      <strong>${escapeHtml(row.displayName)}</strong>
-      <span class="leaderboard-score">${escapeHtml(formatPointAmount(row.score))}</span>
+      <div class="leaderboard-user">
+        <div class="leaderboard-name-line">
+          <strong>${escapeHtml(row.displayName)}</strong>
+          <span class="leaderboard-champion ${championTeam ? "is-picked" : ""}">
+            ${championTeam ? `冠军 ${escapeHtml(championTeam.name)} · ${escapeHtml(championTeam.code)}` : "冠军未选择"}
+          </span>
+        </div>
+        <div class="leaderboard-achievements">
+          <span class="achievement-count">成就 ${row.achievementCount}/${ACHIEVEMENT_DEFINITIONS.length}</span>
+          <div class="achievement-strip">
+            ${row.achievementCount
+              ? renderAchievementBadges(row.achievements)
+              : `<span class="achievement-empty">暂无成就</span>`}
+          </div>
+        </div>
+      </div>
+      <div class="leaderboard-score">
+        <span>累计返还</span>
+        <strong>${escapeHtml(formatPointAmount(row.score))}</strong>
+      </div>
+      ${isLegendary ? `<span class="leaderboard-legendary-tag">ALL 10</span>` : ""}
     </article>
   `;
 }

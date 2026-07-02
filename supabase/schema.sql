@@ -331,6 +331,81 @@ create trigger user_profiles_set_updated_at
   for each row
   execute function public.set_updated_at();
 
+create table if not exists public.champion_picks (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  team_code text not null,
+  created_at timestamptz not null default now()
+);
+
+alter table public.champion_picks
+  drop constraint if exists champion_picks_team_code_check;
+
+alter table public.champion_picks
+  add constraint champion_picks_team_code_check check (
+    team_code in (
+      'ALG', 'ARG', 'AUS', 'AUT', 'BEL', 'BIH', 'BRA', 'CAN',
+      'CIV', 'COD', 'COL', 'CPV', 'CRO', 'CUW', 'CZE', 'ECU',
+      'EGY', 'ENG', 'ESP', 'FRA', 'GER', 'GHA', 'HAI', 'IRN',
+      'IRQ', 'JOR', 'JPN', 'KOR', 'KSA', 'MAR', 'MEX', 'NED',
+      'NOR', 'NZL', 'PAN', 'PAR', 'POR', 'QAT', 'RSA', 'SCO',
+      'SEN', 'SUI', 'SWE', 'TUN', 'TUR', 'URU', 'USA', 'UZB'
+    )
+  );
+
+alter table public.champion_picks enable row level security;
+
+drop policy if exists "Users can read own champion pick" on public.champion_picks;
+create policy "Users can read own champion pick"
+  on public.champion_picks
+  for select
+  to authenticated
+  using (auth.uid() = user_id);
+
+create or replace function public.select_champion_pick(team_code_value text)
+returns text
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  current_user_id uuid := auth.uid();
+  normalized_team_code text := upper(trim(coalesce(team_code_value, '')));
+  existing_team_code text;
+begin
+  if current_user_id is null then
+    raise exception 'not authorized' using errcode = '42501';
+  end if;
+
+  if normalized_team_code not in (
+    'ALG', 'ARG', 'AUS', 'AUT', 'BEL', 'BIH', 'BRA', 'CAN',
+    'CIV', 'COD', 'COL', 'CPV', 'CRO', 'CUW', 'CZE', 'ECU',
+    'EGY', 'ENG', 'ESP', 'FRA', 'GER', 'GHA', 'HAI', 'IRN',
+    'IRQ', 'JOR', 'JPN', 'KOR', 'KSA', 'MAR', 'MEX', 'NED',
+    'NOR', 'NZL', 'PAN', 'PAR', 'POR', 'QAT', 'RSA', 'SCO',
+    'SEN', 'SUI', 'SWE', 'TUN', 'TUR', 'URU', 'USA', 'UZB'
+  ) then
+    raise exception 'invalid champion team' using errcode = '22023';
+  end if;
+
+  insert into public.champion_picks (user_id, team_code)
+  values (current_user_id, normalized_team_code)
+  on conflict (user_id) do nothing;
+
+  select picks.team_code into existing_team_code
+  from public.champion_picks picks
+  where picks.user_id = current_user_id;
+
+  if existing_team_code is distinct from normalized_team_code then
+    raise exception 'champion pick already locked' using errcode = '22023';
+  end if;
+
+  return existing_team_code;
+end;
+$$;
+
+revoke all on function public.select_champion_pick(text) from public;
+grant execute on function public.select_champion_pick(text) to authenticated;
+
 insert into public.user_profiles (user_id, username)
 select
   users.id,
@@ -563,6 +638,111 @@ end;
 $$;
 
 revoke all on function public.record_point_transaction(uuid, uuid, text, numeric, numeric, text, jsonb) from public;
+
+create or replace function public.get_user_achievement_ids(target_user_id uuid)
+returns text[]
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  with prediction_stats as (
+    select
+      count(*)::integer as total_predictions,
+      count(*) filter (where predictions.settled_at is not null)::integer as settled_predictions,
+      count(*) filter (where predictions.is_correct is true)::integer as correct_predictions,
+      coalesce(bool_or(predictions.prediction_type = 'score' and predictions.is_correct is true), false) as has_exact_score_hit,
+      coalesce(bool_or(predictions.prediction_type = 'combo' and predictions.is_correct is true), false) as has_combo_hit,
+      coalesce(bool_or(
+        predictions.prediction_type = 'outcome'
+        and predictions.is_correct is true
+        and predictions.model_probability <= 0.25
+      ), false) as has_underdog_hit,
+      coalesce(bool_or(predictions.prediction_type = 'outcome'), false) as has_outcome_prediction,
+      coalesce(bool_or(predictions.prediction_type = 'score'), false) as has_score_prediction,
+      coalesce(bool_or(predictions.prediction_type = 'combo'), false) as has_combo_prediction
+    from public.predictions predictions
+    where predictions.user_id = target_user_id
+  ),
+  return_stats as (
+    select coalesce(sum(transactions.amount), 0) as cumulative_return_points
+    from public.point_transactions transactions
+    where transactions.user_id = target_user_id
+      and transactions.kind = 'prediction_settlement'
+  ),
+  settled_sequence as (
+    select
+      predictions.is_correct,
+      sum(case when predictions.is_correct is true then 0 else 1 end) over (
+        order by predictions.settled_at, predictions.id
+      ) as miss_group
+    from public.predictions predictions
+    where predictions.user_id = target_user_id
+      and predictions.settled_at is not null
+  ),
+  streak_stats as (
+    select coalesce(max(streak_length), 0)::integer as longest_streak
+    from (
+      select count(*)::integer as streak_length
+      from settled_sequence
+      where is_correct is true
+      group by miss_group
+    ) streaks
+  )
+  select array_remove(array[
+    case when stats.total_predictions >= 1 then 'first_prediction' end,
+    case when stats.correct_predictions >= 3 then 'triple_hit' end,
+    case when stats.correct_predictions >= 10 then 'ten_hits' end,
+    case when stats.has_exact_score_hit then 'score_oracle' end,
+    case when stats.has_combo_hit then 'combo_master' end,
+    case when stats.has_underdog_hit then 'underdog_hunter' end,
+    case when returns.cumulative_return_points >= 100 then 'century_return' end,
+    case when stats.settled_predictions >= 5
+      and stats.correct_predictions::numeric / nullif(stats.settled_predictions, 0) >= 0.6
+      then 'precision_player' end,
+    case when stats.has_outcome_prediction and stats.has_score_prediction and stats.has_combo_prediction
+      then 'all_rounder' end,
+    case when streaks.longest_streak >= 3 then 'hot_streak' end
+  ]::text[], null)
+  from prediction_stats stats
+  cross join return_stats returns
+  cross join streak_stats streaks;
+$$;
+
+revoke all on function public.get_user_achievement_ids(uuid) from public;
+
+create or replace function public.get_my_prediction_profile()
+returns jsonb
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+declare
+  current_user_id uuid := auth.uid();
+  champion_team_code_value text;
+  achievement_ids text[];
+begin
+  if current_user_id is null then
+    raise exception 'not authorized' using errcode = '42501';
+  end if;
+
+  select picks.team_code into champion_team_code_value
+  from public.champion_picks picks
+  where picks.user_id = current_user_id;
+
+  achievement_ids := public.get_user_achievement_ids(current_user_id);
+
+  return jsonb_build_object(
+    'champion_team_code', champion_team_code_value,
+    'achievements', to_jsonb(achievement_ids),
+    'achievement_count', cardinality(achievement_ids)
+  );
+end;
+$$;
+
+revoke all on function public.get_my_prediction_profile() from public;
+grant execute on function public.get_my_prediction_profile() to authenticated;
 
 create or replace function public.poisson_probability(lambda_value numeric, goals integer)
 returns numeric
@@ -839,6 +1019,12 @@ begin
     raise exception 'not authorized' using errcode = '42501';
   end if;
 
+  if not exists (
+    select 1 from public.champion_picks picks where picks.user_id = current_user_id
+  ) then
+    raise exception 'champion pick required' using errcode = '22023';
+  end if;
+
   if prediction_payload is null or jsonb_typeof(prediction_payload) <> 'object' then
     raise exception 'invalid prediction payload' using errcode = '22023';
   end if;
@@ -1071,6 +1257,12 @@ declare
 begin
   if current_user_id is null then
     raise exception 'not authorized' using errcode = '42501';
+  end if;
+
+  if not exists (
+    select 1 from public.champion_picks picks where picks.user_id = current_user_id
+  ) then
+    raise exception 'champion pick required' using errcode = '22023';
   end if;
 
   if combo_payload is null or jsonb_typeof(combo_payload) <> 'object' then
@@ -1617,7 +1809,10 @@ returns table (
   user_id uuid,
   display_name text,
   cumulative_return_points numeric,
-  latest_return_at timestamptz
+  latest_return_at timestamptz,
+  champion_team_code text,
+  achievements jsonb,
+  achievement_count integer
 )
 language plpgsql
 security definer
@@ -1648,10 +1843,17 @@ begin
       '用户 ' || left(returned.user_id::text, 8)
     ) as display_name,
     returned.cumulative_return_points,
-    returned.latest_return_at
+    returned.latest_return_at,
+    champion.team_code as champion_team_code,
+    to_jsonb(achievement.ids) as achievements,
+    cardinality(achievement.ids) as achievement_count
   from returned_points returned
   join auth.users users on users.id = returned.user_id
   left join public.user_profiles profiles on profiles.user_id = returned.user_id
+  left join public.champion_picks champion on champion.user_id = returned.user_id
+  cross join lateral (
+    select coalesce(public.get_user_achievement_ids(returned.user_id), array[]::text[]) as ids
+  ) achievement
   where users.email like '%@users.worldcup-lookup.app'
   order by
     returned.cumulative_return_points desc,
