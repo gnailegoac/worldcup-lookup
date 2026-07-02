@@ -129,6 +129,14 @@ assert.match(schema, /create table if not exists public\.champion_picks/);
 assert.match(schema, /create or replace function public\.select_champion_pick\(team_code_value text\)/);
 assert.equal((schema.match(/raise exception 'champion pick required'/g) || []).length, 2);
 assert.match(schema, /champion_team_code text,\s+achievements jsonb,\s+achievement_count integer/);
+assert.match(schema, /raise exception 'prediction already confirmed'/);
+assert.match(schema, /raise exception 'combo prediction already confirmed'/);
+assert.match(schema, /create or replace function public\.submit_award_prediction\(award_payload jsonb\)/);
+assert.match(schema, /raise exception 'award prediction already confirmed'/);
+assert.doesNotMatch(schema, /create policy "Users can update own award predictions"/);
+assert.match(schema, /'prediction_settlement',\s+-prediction_row\.payout_points/);
+assert.match(schema, /'admin_refund',\s+prediction_row\.stake_points/);
+assert.doesNotMatch(schema, /更新预测时退回原投入/);
 
 const app = fs.readFileSync(path.join(root, "app.js"), "utf8");
 assert.match(app, /url: pageConfig\.url \|\| localStorage\.getItem\(SUPABASE_URL_STORAGE\)/);
@@ -138,6 +146,9 @@ assert.match(app, /class="leaderboard-champion/);
 assert.match(app, /if \(state\.isSubmittingCombo\) return;/);
 assert.match(app, /submitButton\.disabled = state\.isSubmittingCombo \|\| !valid/);
 assert.match(app, /state\.comboDraft = \{\s+stakePoints:/);
+assert.match(app, /确认后不能修改/);
+assert.match(app, /state\.supabase\.rpc\("submit_award_prediction"/);
+assert.doesNotMatch(app, /\.from\("award_predictions"\)\s+\.upsert/);
 
 const achievementBlock = app.slice(
   app.indexOf("const ACHIEVEMENT_DEFINITIONS ="),

@@ -266,26 +266,8 @@ create policy "Users can read public award predictions"
   using (is_public = true or auth.uid() = user_id);
 
 drop policy if exists "Users can insert own award predictions" on public.award_predictions;
-create policy "Users can insert own award predictions"
-  on public.award_predictions
-  for insert
-  to authenticated
-  with check (auth.uid() = user_id and is_public = true);
-
 drop policy if exists "Users can update own award predictions" on public.award_predictions;
-create policy "Users can update own award predictions"
-  on public.award_predictions
-  for update
-  to authenticated
-  using (auth.uid() = user_id)
-  with check (auth.uid() = user_id and is_public = true);
-
 drop policy if exists "Users can delete own award predictions" on public.award_predictions;
-create policy "Users can delete own award predictions"
-  on public.award_predictions
-  for delete
-  to authenticated
-  using (auth.uid() = user_id);
 
 drop trigger if exists award_predictions_set_updated_at on public.award_predictions;
 create trigger award_predictions_set_updated_at
@@ -995,6 +977,93 @@ $$;
 revoke all on function public.get_my_point_balance() from public;
 grant execute on function public.get_my_point_balance() to authenticated;
 
+create or replace function public.submit_award_prediction(award_payload jsonb)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  current_user_id uuid := auth.uid();
+  award_type_value text;
+  candidate_name_value text;
+  candidate_team_value text;
+  display_name_value text;
+  model_probability_value numeric;
+  model_snapshot_value timestamptz;
+  saved_prediction public.award_predictions%rowtype;
+begin
+  if current_user_id is null then
+    raise exception 'not authorized' using errcode = '42501';
+  end if;
+
+  if award_payload is null or jsonb_typeof(award_payload) <> 'object' then
+    raise exception 'invalid award prediction payload' using errcode = '22023';
+  end if;
+
+  award_type_value := trim(coalesce(award_payload ->> 'award_type', ''));
+  candidate_name_value := trim(coalesce(award_payload ->> 'candidate_name', ''));
+  candidate_team_value := nullif(trim(coalesce(award_payload ->> 'candidate_team', '')), '');
+  model_probability_value := nullif(award_payload ->> 'model_probability', '')::numeric;
+  model_snapshot_value := coalesce(
+    nullif(award_payload ->> 'model_snapshot_at', '')::timestamptz,
+    now()
+  );
+
+  if award_type_value not in ('golden_ball', 'golden_boot', 'golden_glove') then
+    raise exception 'invalid award type' using errcode = '22023';
+  end if;
+  if candidate_name_value = '' or char_length(candidate_name_value) > 120 then
+    raise exception 'invalid award candidate' using errcode = '22023';
+  end if;
+  if model_probability_value is not null
+    and (model_probability_value < 0 or model_probability_value > 1) then
+    raise exception 'invalid award probability' using errcode = '22023';
+  end if;
+
+  select coalesce(
+    nullif(profiles.username, ''),
+    nullif(trim(award_payload ->> 'display_name'), ''),
+    '用户 ' || left(current_user_id::text, 8)
+  )
+  into display_name_value
+  from (select 1) seed
+  left join public.user_profiles profiles on profiles.user_id = current_user_id;
+
+  begin
+    insert into public.award_predictions (
+      user_id,
+      award_type,
+      display_name,
+      candidate_name,
+      candidate_team,
+      model_probability,
+      model_snapshot_at,
+      is_public
+    )
+    values (
+      current_user_id,
+      award_type_value,
+      display_name_value,
+      candidate_name_value,
+      candidate_team_value,
+      model_probability_value,
+      model_snapshot_value,
+      true
+    )
+    returning * into saved_prediction;
+  exception
+    when unique_violation then
+      raise exception 'award prediction already confirmed' using errcode = '23505';
+  end;
+
+  return to_jsonb(saved_prediction);
+end;
+$$;
+
+revoke all on function public.submit_award_prediction(jsonb) from public;
+grant execute on function public.submit_award_prediction(jsonb) to authenticated;
+
 create or replace function public.submit_prediction(prediction_payload jsonb)
 returns jsonb
 language plpgsql
@@ -1006,7 +1075,6 @@ declare
   market_row public.prediction_markets%rowtype;
   existing_prediction public.predictions%rowtype;
   saved_prediction public.predictions%rowtype;
-  has_existing boolean := false;
   prediction_type_value text;
   outcome_value text;
   home_score_value integer;
@@ -1108,99 +1176,53 @@ begin
   where predictions.user_id = current_user_id
     and predictions.match_id = market_row.match_id
   for update;
-  has_existing := found;
-
-  if has_existing then
-    if existing_prediction.settled_at is not null or existing_prediction.match_kickoff_utc <= now() then
-      raise exception 'prediction can no longer be changed' using errcode = '22023';
-    end if;
-
-    if existing_prediction.stake_points is not null then
-      current_balance := current_balance + existing_prediction.stake_points;
-      update public.point_accounts
-      set balance = current_balance
-      where user_id = current_user_id;
-      perform public.record_point_transaction(
-        current_user_id,
-        existing_prediction.id,
-        'prediction_refund',
-        existing_prediction.stake_points,
-        current_balance,
-        '更新预测时退回原投入',
-        jsonb_build_object('match_id', market_row.match_id)
-      );
-    end if;
+  if found then
+    raise exception 'prediction already confirmed' using errcode = '23505';
   end if;
 
   if current_balance < stake_value then
     raise exception 'insufficient points' using errcode = '22023';
   end if;
 
-  if has_existing then
-    update public.predictions
-    set
-      match_kickoff_utc = market_row.match_kickoff_utc,
-      match_label = market_row.match_label,
-      home_team = market_row.home_team,
-      away_team = market_row.away_team,
-      display_name = display_name_value,
-      prediction_type = prediction_type_value,
-      outcome = outcome_value,
-      home_score = home_score_value,
-      away_score = away_score_value,
-      combo_legs = null,
-      model_probability = probability_value,
-      model_probability_label = probability_label,
-      model_snapshot_at = market_row.snapshot_at,
-      stake_points = stake_value,
-      payout_points = 0,
-      is_correct = null,
-      settled_at = null,
-      is_public = true,
-      updated_at = now()
-    where id = existing_prediction.id
-    returning * into saved_prediction;
-  else
-    insert into public.predictions (
-      user_id,
-      match_id,
-      match_kickoff_utc,
-      match_label,
-      home_team,
-      away_team,
-      display_name,
-      prediction_type,
-      outcome,
-      home_score,
-      away_score,
-      model_probability,
-      model_probability_label,
-      model_snapshot_at,
-      stake_points,
-      payout_points,
-      is_public
-    )
-    values (
-      current_user_id,
-      market_row.match_id,
-      market_row.match_kickoff_utc,
-      market_row.match_label,
-      market_row.home_team,
-      market_row.away_team,
-      display_name_value,
-      prediction_type_value,
-      outcome_value,
-      home_score_value,
-      away_score_value,
-      probability_value,
-      probability_label,
-      market_row.snapshot_at,
-      stake_value,
-      0,
-      true
-    )
-    returning * into saved_prediction;
-  end if;
+  insert into public.predictions (
+    user_id,
+    match_id,
+    match_kickoff_utc,
+    match_label,
+    home_team,
+    away_team,
+    display_name,
+    prediction_type,
+    outcome,
+    home_score,
+    away_score,
+    model_probability,
+    model_probability_label,
+    model_snapshot_at,
+    stake_points,
+    payout_points,
+    is_public
+  )
+  values (
+    current_user_id,
+    market_row.match_id,
+    market_row.match_kickoff_utc,
+    market_row.match_label,
+    market_row.home_team,
+    market_row.away_team,
+    display_name_value,
+    prediction_type_value,
+    outcome_value,
+    home_score_value,
+    away_score_value,
+    probability_value,
+    probability_label,
+    market_row.snapshot_at,
+    stake_value,
+    0,
+    true
+  )
+  returning * into saved_prediction;
 
   current_balance := current_balance - stake_value;
   update public.point_accounts
@@ -1256,6 +1278,7 @@ declare
   latest_snapshot timestamptz;
   display_name_value text;
   leg_count integer;
+  combo_signature_value text;
 begin
   if current_user_id is null then
     raise exception 'not authorized' using errcode = '42501';
@@ -1358,6 +1381,13 @@ begin
     raise exception 'invalid combo probability' using errcode = '22023';
   end if;
 
+  select string_agg(
+    (canonical_leg.leg ->> 'match_id') || ':' || (canonical_leg.leg ->> 'outcome'),
+    '|' order by canonical_leg.leg ->> 'match_id', canonical_leg.leg ->> 'outcome'
+  )
+  into combo_signature_value
+  from jsonb_array_elements(canonical_legs) as canonical_leg(leg);
+
   select coalesce(
     nullif(profiles.username, ''),
     nullif(trim(combo_payload ->> 'display_name'), ''),
@@ -1375,6 +1405,22 @@ begin
   from public.point_accounts accounts
   where accounts.user_id = current_user_id
   for update;
+
+  if exists (
+    select 1
+    from public.predictions existing
+    where existing.user_id = current_user_id
+      and existing.prediction_type = 'combo'
+      and (
+        select string_agg(
+          (existing_leg.leg ->> 'match_id') || ':' || (existing_leg.leg ->> 'outcome'),
+          '|' order by existing_leg.leg ->> 'match_id', existing_leg.leg ->> 'outcome'
+        )
+        from jsonb_array_elements(existing.combo_legs) as existing_leg(leg)
+      ) = combo_signature_value
+  ) then
+    raise exception 'combo prediction already confirmed' using errcode = '23505';
+  end if;
 
   if current_balance < stake_value then
     raise exception 'insufficient points' using errcode = '22023';
@@ -1928,6 +1974,7 @@ returns table (
   point_balance numeric,
   pending_stake_points numeric,
   prediction_count bigint,
+  award_prediction_count bigint,
   public_prediction_count bigint,
   private_prediction_count bigint,
   latest_prediction_at timestamptz
@@ -1961,16 +2008,35 @@ begin
         and predictions.settled_at is null
     ), 0) as pending_stake_points,
     count(predictions.id) as prediction_count,
+    (
+      select count(*)
+      from public.award_predictions awards
+      where awards.user_id = users.id
+    ) as award_prediction_count,
     count(predictions.id) filter (where predictions.is_public) as public_prediction_count,
     count(predictions.id) filter (where not predictions.is_public) as private_prediction_count,
-    max(predictions.created_at) as latest_prediction_at
+    greatest(
+      max(predictions.created_at),
+      (
+        select max(awards.created_at)
+        from public.award_predictions awards
+        where awards.user_id = users.id
+      )
+    ) as latest_prediction_at
   from auth.users users
   left join public.user_profiles profiles on profiles.user_id = users.id
   left join public.point_accounts accounts on accounts.user_id = users.id
   left join public.predictions predictions on predictions.user_id = users.id
   where users.email like '%@users.worldcup-lookup.app'
   group by users.id, profiles.username, accounts.balance, users.raw_user_meta_data, users.created_at, users.last_sign_in_at
-  order by coalesce(accounts.balance, 0) desc, count(predictions.id) desc, users.created_at desc;
+  order by
+    coalesce(accounts.balance, 0) desc,
+    count(predictions.id) + (
+      select count(*)
+      from public.award_predictions awards
+      where awards.user_id = users.id
+    ) desc,
+    users.created_at desc;
 end;
 $$;
 
@@ -2057,45 +2123,77 @@ as $$
 declare
   deleted_count integer;
   deleted_award_count integer;
-  refunded_points numeric;
   current_balance numeric;
+  prediction_row public.predictions%rowtype;
 begin
   if not public.is_admin() then
     raise exception 'not authorized' using errcode = '42501';
   end if;
 
-  select coalesce(sum(predictions.stake_points), 0)
-  into refunded_points
-  from public.predictions predictions
-  where predictions.user_id = target_user_id
-    and predictions.stake_points is not null
-    and predictions.settled_at is null;
+  insert into public.point_accounts (user_id, balance)
+  values (target_user_id, 0)
+  on conflict (user_id) do nothing;
 
-  if refunded_points > 0 then
-    insert into public.point_accounts (user_id, balance)
-    values (target_user_id, 0)
-    on conflict (user_id) do nothing;
+  select accounts.balance into current_balance
+  from public.point_accounts accounts
+  where accounts.user_id = target_user_id
+  for update;
 
-    select accounts.balance into current_balance
-    from public.point_accounts accounts
-    where accounts.user_id = target_user_id
-    for update;
+  for prediction_row in
+    select predictions.*
+    from public.predictions predictions
+    where predictions.user_id = target_user_id
+    order by predictions.created_at, predictions.id
+    for update
+  loop
+    if prediction_row.settled_at is not null
+      and coalesce(prediction_row.payout_points, 0) > 0 then
+      current_balance := current_balance - prediction_row.payout_points;
+      update public.point_accounts
+      set balance = current_balance
+      where user_id = target_user_id;
 
-    current_balance := current_balance + refunded_points;
-    update public.point_accounts
-    set balance = current_balance
-    where user_id = target_user_id;
+      perform public.record_point_transaction(
+        target_user_id,
+        prediction_row.id,
+        'prediction_settlement',
+        -prediction_row.payout_points,
+        current_balance,
+        '管理员作废预测：撤销原返还',
+        jsonb_build_object(
+          'admin_void', true,
+          'prediction_id', prediction_row.id,
+          'match_id', prediction_row.match_id,
+          'reversed_payout', prediction_row.payout_points
+        )
+      );
+    end if;
 
-    perform public.record_point_transaction(
-      target_user_id,
-      null,
-      'admin_refund',
-      refunded_points,
-      current_balance,
-      '清空预测时退回未结算投入',
-      '{}'::jsonb
-    );
-  end if;
+    if coalesce(prediction_row.stake_points, 0) > 0 then
+      current_balance := current_balance + prediction_row.stake_points;
+      update public.point_accounts
+      set balance = current_balance
+      where user_id = target_user_id;
+
+      perform public.record_point_transaction(
+        target_user_id,
+        prediction_row.id,
+        'admin_refund',
+        prediction_row.stake_points,
+        current_balance,
+        case
+          when prediction_row.settled_at is null then '管理员取消未结算预测：退回本金'
+          else '管理员作废已结算预测：退回本金'
+        end,
+        jsonb_build_object(
+          'admin_void', prediction_row.settled_at is not null,
+          'prediction_id', prediction_row.id,
+          'match_id', prediction_row.match_id,
+          'refunded_stake', prediction_row.stake_points
+        )
+      );
+    end if;
+  end loop;
 
   delete from public.predictions predictions
   where predictions.user_id = target_user_id;

@@ -678,6 +678,7 @@ const state = {
   authStatus: "未连接 Supabase",
   authNotice: "",
   predictionNotice: "",
+  isSubmittingPrediction: false,
   comboPredictionNotice: "",
   comboSchemaMissing: false,
   comboDraft: { stakePoints: null, selections: {} },
@@ -691,6 +692,7 @@ const state = {
   pointBalance: null,
   pointSchemaMissing: false,
   awardPredictionNotice: "",
+  awardSubmittingType: "",
   myPredictions: [],
   publicPredictions: [],
   myAwardPredictions: [],
@@ -1841,6 +1843,7 @@ function isAuthExpiredError(error) {
 }
 
 async function submitPrediction(match) {
+  if (state.isSubmittingPrediction) return;
   if (!state.supabase || !state.authSession?.user) {
     state.predictionNotice = "请先登录后再提交预测。";
     render();
@@ -1860,6 +1863,11 @@ async function submitPrediction(match) {
     render();
     return;
   }
+  if (state.myPredictions.some((prediction) => prediction.match_id === match.id)) {
+    state.predictionNotice = "这场预测已经确认，不能修改。";
+    renderDetail(match);
+    return;
+  }
 
   const form = els.matchDetail.querySelector("[data-prediction-form]");
   if (!form) return;
@@ -1869,30 +1877,46 @@ async function submitPrediction(match) {
     return;
   }
 
+  const expectedPayout = payload.stake_points / Number(payload.model_probability || 0);
+  const confirmed = window.confirm(
+    `确认提交“${payload.model_probability_label}”？\n` +
+    `投入 ${formatPointAmount(payload.stake_points)}，当前概率 ${formatPercent(payload.model_probability)}，` +
+    `命中预计返还 ${formatPointAmount(expectedPayout)}。\n确认后不能修改。`,
+  );
+  if (!confirmed) return;
+
+  state.isSubmittingPrediction = true;
   state.predictionNotice = "正在保存预测...";
   renderDetail(match);
-  await saveUserProfile(payload.display_name);
-  const result = await state.supabase.rpc("submit_prediction", { prediction_payload: payload });
-  const { error } = result;
+  try {
+    await saveUserProfile(payload.display_name);
+    const result = await state.supabase.rpc("submit_prediction", { prediction_payload: payload });
+    const { error } = result;
 
-  if (isAuthExpiredError(error)) {
-    await expireAuthSession();
-    return;
+    if (isAuthExpiredError(error)) {
+      await expireAuthSession();
+      return;
+    }
+    if (error) {
+      state.pointSchemaMissing = isMissingPointSchemaError(error);
+      state.predictionNotice = state.pointSchemaMissing
+        ? "请先重新运行 supabase/schema.sql，启用点数功能后再提交预测。"
+        : `预测提交失败：${formatPointError(error)}`;
+      return;
+    }
+    const saved = result.data?.prediction || {};
+    state.pointBalance = Number(result.data?.balance ?? state.pointBalance);
+    state.pointSchemaMissing = false;
+    const payout = payload.stake_points / Number(saved.model_probability || payload.model_probability);
+    state.predictionNotice = `预测已确认，投入 ${formatPointAmount(payload.stake_points)}；命中返还 ${formatPointAmount(payout)}。`;
+    state.isSubmittingPrediction = false;
+    await loadPredictions();
+  } catch (error) {
+    state.predictionNotice = `预测提交失败：${getErrorMessage(error)}`;
+  } finally {
+    state.isSubmittingPrediction = false;
+    if (state.authSession?.user) renderDetail(getSelectedMatch());
   }
-  if (error) {
-    state.pointSchemaMissing = isMissingPointSchemaError(error);
-    state.predictionNotice = state.pointSchemaMissing
-      ? "请先重新运行 supabase/schema.sql，启用点数功能后再提交预测。"
-      : `预测提交失败：${formatPointError(error)}`;
-    render();
-    return;
-  }
-  const saved = result.data?.prediction || {};
-  state.pointBalance = Number(result.data?.balance ?? state.pointBalance);
-  state.pointSchemaMissing = false;
-  const payout = Number(saved.payout_points) || payload.stake_points / Number(saved.model_probability || payload.model_probability);
-  state.predictionNotice = `预测已保存，投入 ${formatPointAmount(payload.stake_points)}；命中返还 ${formatPointAmount(payout)}。`;
-  await loadPredictions();
 }
 
 async function submitComboPrediction() {
@@ -1937,6 +1961,31 @@ async function submitComboPrediction() {
       outcome: selection.outcome,
     })),
   };
+  const signature = buildComboPredictionSignature(payload.legs);
+  const duplicate = state.myPredictions.some(
+    (prediction) =>
+      isComboPrediction(prediction) &&
+      buildComboPredictionSignature(normalizeComboLegs(prediction.combo_legs)) === signature,
+  );
+  if (duplicate) {
+    setComboPredictionNotice("相同的组合预测已经确认，不能重复提交。");
+    return;
+  }
+
+  const combinedProbability = selections.reduce(
+    (product, selection) => product * Number(getOutcomeProbabilitySnapshot(selection.match, selection.outcome).model_probability || 0),
+    1,
+  );
+  const selectionSummary = selections
+    .map((selection) => `${selection.match.home} vs ${selection.match.away}：${getOutcomeProbabilitySnapshot(selection.match, selection.outcome).model_probability_label}`)
+    .join("\n");
+  const confirmed = window.confirm(
+    `确认提交以下组合？\n${selectionSummary}\n` +
+    `投入 ${formatPointAmount(stakePoints)}，组合概率 ${formatPercent(combinedProbability)}，` +
+    `全中预计返还 ${formatPointAmount(stakePoints / combinedProbability)}。\n确认后不能修改。`,
+  );
+  if (!confirmed) return;
+
   state.isSubmittingCombo = true;
   const submitButton = form.querySelector("[data-action='submit-combo-prediction']");
   if (submitButton) submitButton.disabled = true;
@@ -2090,12 +2139,18 @@ function formatComboMultiplier(value) {
 }
 
 async function submitAwardPrediction(awardType) {
+  if (state.awardSubmittingType) return;
   if (!state.supabase || !state.authSession?.user) {
     state.awardPredictionNotice = "请先登录后再提交奖项预测。";
     renderAwards();
     return;
   }
   if (!AWARD_TYPES.includes(awardType)) return;
+  if (state.myAwardPredictions.some((prediction) => prediction.award_type === awardType)) {
+    state.awardPredictionNotice = `${AWARD_LABELS[awardType]}预测已经确认，不能修改。`;
+    renderAwards();
+    return;
+  }
 
   const form = els.awardsPanel?.querySelector(`[data-award-form="${awardType}"]`);
   if (!form) return;
@@ -2111,41 +2166,53 @@ async function submitAwardPrediction(awardType) {
   const awards = computeAwardProbabilities();
   const award = awards.find((item) => item.type === awardType);
   const candidate = award?.candidates.find((item) => item.name === candidateName);
-  const payload = {
-    user_id: state.authSession.user.id,
-    award_type: awardType,
-    display_name: getCurrentDisplayName(),
-    candidate_name: candidateName,
-    candidate_team: candidate?.team || "",
-    model_probability: candidate ? normalizeStoredProbability(candidate.probability) : null,
-    model_snapshot_at: new Date().toISOString(),
-    is_public: true,
-  };
-
-  state.awardPredictionNotice = `正在保存${AWARD_LABELS[awardType]}预测...`;
-  renderAwards();
-  await saveUserProfile(payload.display_name);
-
-  const { error } = await state.supabase
-    .from("award_predictions")
-    .upsert(payload, { onConflict: "user_id,award_type" });
-
-  if (isAuthExpiredError(error)) {
-    await expireAuthSession();
-    return;
-  }
-  if (error) {
-    state.awardSchemaMissing = isMissingAwardPredictionSchemaError(error);
-    state.awardPredictionNotice = state.awardSchemaMissing
-      ? "请重新运行 supabase/schema.sql 后启用奖项预测。"
-      : `奖项预测提交失败：${error.message}`;
+  if (!candidate) {
+    state.awardPredictionNotice = "请选择当前候选名单中的选项。";
     renderAwards();
     return;
   }
+  const payload = {
+    award_type: awardType,
+    display_name: getCurrentDisplayName(),
+    candidate_name: candidateName,
+    candidate_team: candidate.team || "",
+    model_probability: normalizeStoredProbability(candidate.probability),
+    model_snapshot_at: new Date().toISOString(),
+  };
 
-  state.awardSchemaMissing = false;
-  state.awardPredictionNotice = `${AWARD_LABELS[awardType]}预测已保存。`;
-  await loadPredictions();
+  if (!window.confirm(
+    `确认${AWARD_LABELS[awardType]}预测为“${candidateName}${candidate.team ? ` · ${candidate.team}` : ""}”？\n确认后不能修改。`,
+  )) return;
+
+  state.awardSubmittingType = awardType;
+  state.awardPredictionNotice = `正在保存${AWARD_LABELS[awardType]}预测...`;
+  renderAwards();
+  try {
+    await saveUserProfile(payload.display_name);
+    const result = await state.supabase.rpc("submit_award_prediction", { award_payload: payload });
+
+    if (isAuthExpiredError(result.error)) {
+      await expireAuthSession();
+      return;
+    }
+    if (result.error) {
+      state.awardSchemaMissing = isMissingAwardPredictionSchemaError(result.error);
+      state.awardPredictionNotice = state.awardSchemaMissing
+        ? "请重新运行 supabase/schema.sql 后启用奖项预测。"
+        : `奖项预测提交失败：${formatPointError(result.error)}`;
+      return;
+    }
+
+    state.awardSchemaMissing = false;
+    state.awardPredictionNotice = `${AWARD_LABELS[awardType]}预测已确认，不能修改。`;
+    state.awardSubmittingType = "";
+    await loadPredictions();
+  } catch (error) {
+    state.awardPredictionNotice = `奖项预测提交失败：${getErrorMessage(error)}`;
+  } finally {
+    state.awardSubmittingType = "";
+    renderAwards();
+  }
 }
 
 function buildPredictionPayload(match, formData) {
@@ -2156,8 +2223,11 @@ function buildPredictionPayload(match, formData) {
     return null;
   }
   const existing = state.myPredictions.find((prediction) => prediction.match_id === match.id);
-  const existingStake = existing?.settled_at ? 0 : Number(existing?.stake_points || 0);
-  const allocatablePoints = Number(state.pointBalance || 0) + existingStake;
+  if (existing) {
+    state.predictionNotice = "这场预测已经确认，不能修改。";
+    return null;
+  }
+  const allocatablePoints = Number(state.pointBalance || 0);
   if (!Number.isFinite(state.pointBalance) || stakePoints > allocatablePoints) {
     state.predictionNotice = "可用点数不足，请减少本次投入或联系管理员分配点数。";
     return null;
@@ -2309,7 +2379,9 @@ function resetPredictionProfile() {
   state.predictionProfileSchemaMissing = false;
   state.championDraftTeamCode = "";
   state.isSavingChampionPick = false;
+  state.isSubmittingPrediction = false;
   state.isSubmittingCombo = false;
+  state.awardSubmittingType = "";
   resetComboPredictionDraft();
 }
 
@@ -2574,6 +2646,9 @@ function isMissingPredictionProfileSchemaError(error) {
 function formatPointError(error) {
   const message = cleanText(error?.message);
   if (/insufficient points/i.test(message)) return "可用点数不足。";
+  if (/award prediction already confirmed/i.test(message)) return "这个奖项预测已经确认，不能修改。";
+  if (/combo prediction already confirmed/i.test(message)) return "相同的组合预测已经确认，不能重复提交。";
+  if (/prediction already confirmed/i.test(message)) return "这场预测已经确认，不能修改。";
   if (/champion pick required/i.test(message)) return "请先确认冠军球队。";
   if (/champion pick already locked/i.test(message)) return "冠军球队已经锁定，不能更改。";
   if (/invalid champion team/i.test(message)) return "冠军球队无效，请刷新页面后重试。";
@@ -2589,7 +2664,7 @@ function formatPointError(error) {
 }
 
 function isMissingAwardPredictionSchemaError(error) {
-  return /award_predictions|schema cache|relation .* does not exist|could not find/i.test(
+  return /submit_award_prediction|award_predictions|schema cache|relation .* does not exist|function .* not found|could not find/i.test(
     `${error?.message || ""} ${error?.details || ""} ${error?.hint || ""}`,
   );
 }
@@ -2856,7 +2931,22 @@ async function deleteAdminUserPredictions(userId) {
   if (!state.supabase?.rpc || !state.isAdmin || !userId) return;
   const user = state.adminUsers.find((item) => item.user_id === userId);
   const name = user?.username || `用户 ${shortUserId(userId)}`;
-  const confirmed = window.confirm(`确认清空 ${name} 的所有预测记录？这个操作不能撤销。`);
+  const pendingPredictions = state.adminPredictions.filter((prediction) => !prediction.settled_at);
+  const settledPredictions = state.adminPredictions.filter((prediction) => prediction.settled_at);
+  const pendingRefund = pendingPredictions.reduce((sum, prediction) => sum + Number(prediction.stake_points || 0), 0);
+  const settledStakeRefund = settledPredictions.reduce((sum, prediction) => sum + Number(prediction.stake_points || 0), 0);
+  const payoutReversal = settledPredictions.reduce((sum, prediction) => sum + Number(prediction.payout_points || 0), 0);
+  const awardCount = Math.max(
+    Number(user?.award_prediction_count || 0),
+    state.awardPredictions.filter((prediction) => prediction.user_id === userId).length,
+  );
+  const netAdjustment = pendingRefund + settledStakeRefund - payoutReversal;
+  const confirmed = window.confirm(
+    `确认清理 ${name} 的全部预测？\n` +
+    `未结算 ${pendingPredictions.length} 条，退回本金 ${formatPointAmount(pendingRefund)}；` +
+    `已结算 ${settledPredictions.length} 条，撤销返还 ${formatPointAmount(payoutReversal)} 并退回本金 ${formatPointAmount(settledStakeRefund)}；` +
+    `奖项预测 ${awardCount} 条。\n余额净调整 ${netAdjustment >= 0 ? "+" : ""}${formatPointAmount(netAdjustment)}。这个操作不能撤销。`,
+  );
   if (!confirmed) return;
 
   state.isLoadingAdmin = true;
@@ -2875,7 +2965,7 @@ async function deleteAdminUserPredictions(userId) {
     return;
   }
 
-  state.adminNotice = `已清空 ${name} 的 ${Number(result.data || 0)} 条预测记录。`;
+  state.adminNotice = `已清理 ${name} 的 ${Number(result.data || 0)} 条预测记录，余额净调整 ${netAdjustment >= 0 ? "+" : ""}${formatPointAmount(netAdjustment)}。`;
   await loadPredictions();
 }
 
@@ -3615,11 +3705,11 @@ function renderPredictionForm(match) {
   const user = state.authSession?.user;
   const canPredict = isMatchPredictable(match);
   const existing = state.myPredictions.find((prediction) => prediction.match_id === match.id);
-  const existingStake = existing?.settled_at ? 0 : Number(existing?.stake_points || 0);
-  const allocatablePoints = Math.max(0, Number(state.pointBalance || 0) + existingStake);
+  const existingStake = Number(existing?.stake_points || 0);
+  const allocatablePoints = Math.max(0, Number(state.pointBalance || 0));
   const hasPoints = allocatablePoints >= 1;
   const championReady = hasChampionPick();
-  const disabled = !user || !state.supabase || !championReady || state.predictionProfileSchemaMissing || !canPredict || state.pointSchemaMissing || !hasPoints;
+  const disabled = Boolean(existing) || state.isSubmittingPrediction || !user || !state.supabase || !championReady || state.predictionProfileSchemaMissing || !canPredict || state.pointSchemaMissing || !hasPoints;
   const disabledAttr = disabled ? "disabled" : "";
   const status = !state.supabase
     ? "未连接 Supabase"
@@ -3629,27 +3719,33 @@ function renderPredictionForm(match) {
         ? "冠军选择功能待启用"
         : !championReady
           ? "请先确认冠军球队"
-          : !canPredict
-            ? "比赛已开始或已完赛"
-            : state.pointSchemaMissing
-              ? "点数功能待启用"
-              : !hasPoints
-                ? "点数不足，请联系管理员"
-                : `可分配 ${formatPointAmount(allocatablePoints)}`;
+          : existing
+            ? "已确认，不能修改"
+            : state.isSubmittingPrediction
+              ? "正在提交..."
+              : !canPredict
+                ? "比赛已开始或已完赛"
+                : state.pointSchemaMissing
+                  ? "点数功能待启用"
+                  : !hasPoints
+                    ? "点数不足，请联系管理员"
+                    : `可分配 ${formatPointAmount(allocatablePoints)}`;
   const predictionType = isScorePrediction(existing || {}) ? "score" : "outcome";
   const outcome = ["home", "draw", "away"].includes(existing?.outcome) ? existing.outcome : "home";
   const predictedHomeScore = hasStoredScore(existing?.home_score) ? Number(existing.home_score) : 1;
   const predictedAwayScore = hasStoredScore(existing?.away_score) ? Number(existing.away_score) : 1;
   const defaultStake = existingStake >= 1 ? existingStake : Math.min(10, allocatablePoints);
-  const initialProbability = predictionType === "score"
-    ? scoreProbability(match, predictedHomeScore, predictedAwayScore)
-    : getOutcomeProbabilitySnapshot(match, outcome).model_probability;
+  const initialProbability = existing
+    ? Number(existing.model_probability || 0)
+    : predictionType === "score"
+      ? scoreProbability(match, predictedHomeScore, predictedAwayScore)
+      : getOutcomeProbabilitySnapshot(match, outcome).model_probability;
   const initialPayout = defaultStake >= 1 && initialProbability > 0 ? defaultStake / initialProbability : 0;
 
   return `
     <form class="prediction-form" data-prediction-form data-prediction-type="${predictionType}">
       <div class="prediction-form-head">
-        <h2 class="section-title">提交预测</h2>
+        <h2 class="section-title">${existing ? "预测已确认" : "提交预测"}</h2>
         <span>${escapeHtml(status)}</span>
       </div>
       ${state.predictionNotice ? `<div class="prediction-notice">${escapeHtml(state.predictionNotice)}</div>` : ""}
@@ -3681,7 +3777,7 @@ function renderPredictionForm(match) {
           本次投入
           <input name="stakePoints" type="number" min="1" max="${allocatablePoints}" step="0.01" value="${defaultStake >= 1 ? defaultStake : 1}" ${disabledAttr} />
         </label>
-        <button type="button" class="action-button primary prediction-submit" data-action="submit-prediction" ${disabledAttr}>${existing ? "更新" : "提交"}</button>
+        <button type="button" class="action-button primary prediction-submit" data-action="submit-prediction" ${disabledAttr}>${existing ? "已确认" : state.isSubmittingPrediction ? "提交中..." : "确认预测"}</button>
       </div>
       <div class="prediction-payout-preview" data-payout-preview>${initialPayout > 0 ? `命中预计返还 ${escapeHtml(formatPointAmount(initialPayout))} · 当前概率 ${escapeHtml(formatPercent(initialProbability))}` : ""}</div>
     </form>
@@ -3907,7 +4003,7 @@ function renderAwardCard(award) {
       probability: normalizeStoredProbability(myPrediction?.model_probability) ?? 0,
     });
   }
-  const disabled = !state.supabase || !state.authSession?.user || state.awardSchemaMissing ? "disabled" : "";
+  const disabled = !state.supabase || !state.authSession?.user || state.awardSchemaMissing || Boolean(state.awardSubmittingType) ? "disabled" : "";
 
   return `
     <article class="award-card">
@@ -3920,20 +4016,25 @@ function renderAwardCard(award) {
       <div class="award-candidates">
         ${candidates.length ? candidates.map(renderAwardCandidate).join("") : `<div class="empty-list compact-empty">暂无候选概率</div>`}
       </div>
-      <form class="award-form" data-award-form="${escapeHtml(award.type)}">
-        <label>
-          我的预测
-          <select name="candidateName" ${disabled}>
-            ${options.map((candidate) => `
-              <option value="${escapeHtml(candidate.name)}" ${candidate.name === selectedCandidate ? "selected" : ""}>
-                ${escapeHtml(candidate.name)}${candidate.team ? ` · ${escapeHtml(candidate.team)}` : ""}
-              </option>
-            `).join("")}
-          </select>
-        </label>
-        <button type="button" class="action-button primary" data-action="submit-award-prediction" data-award-type="${escapeHtml(award.type)}" ${disabled}>保存</button>
-      </form>
-      ${myPrediction ? `<div class="award-my-pick">已预测：${escapeHtml(myPrediction.candidate_name)}${myPrediction.candidate_team ? ` · ${escapeHtml(myPrediction.candidate_team)}` : ""}</div>` : ""}
+      ${myPrediction ? `
+        <div class="award-my-pick">
+          已确认：${escapeHtml(myPrediction.candidate_name)}${myPrediction.candidate_team ? ` · ${escapeHtml(myPrediction.candidate_team)}` : ""} · 不可修改
+        </div>
+      ` : `
+        <form class="award-form" data-award-form="${escapeHtml(award.type)}">
+          <label>
+            我的预测
+            <select name="candidateName" ${disabled}>
+              ${options.map((candidate) => `
+                <option value="${escapeHtml(candidate.name)}" ${candidate.name === selectedCandidate ? "selected" : ""}>
+                  ${escapeHtml(candidate.name)}${candidate.team ? ` · ${escapeHtml(candidate.team)}` : ""}
+                </option>
+              `).join("")}
+            </select>
+          </label>
+          <button type="button" class="action-button primary" data-action="submit-award-prediction" data-award-type="${escapeHtml(award.type)}" ${disabled}>${state.awardSubmittingType === award.type ? "确认中..." : "确认预测"}</button>
+        </form>
+      `}
       <div class="award-public-picks">
         ${state.authSession?.user
           ? renderAwardPredictionRows(publicPredictions)
@@ -4249,11 +4350,15 @@ function renderAdminUsers() {
 
   return state.adminUsers.map((user) => {
     const selected = user.user_id === state.selectedAdminUserId;
+    const awardPredictionCount = Math.max(
+      Number(user.award_prediction_count || 0),
+      state.awardPredictions.filter((prediction) => prediction.user_id === user.user_id).length,
+    );
     return `
       <button class="admin-user-card ${selected ? "is-selected" : ""}" type="button" data-admin-user-id="${escapeHtml(user.user_id)}">
         <strong>${escapeHtml(user.username || `用户 ${shortUserId(user.user_id)}`)}</strong>
         <span>点数 ${escapeHtml(formatPointAmount(user.point_balance || 0))}</span>
-        <span>预测 ${Number(user.prediction_count || 0)}</span>
+        <span>比赛预测 ${Number(user.prediction_count || 0)} · 奖项预测 ${awardPredictionCount}</span>
         <span>最近 ${escapeHtml(formatDateFull(user.latest_prediction_at || user.auth_created_at))}</span>
       </button>
     `;
@@ -4265,11 +4370,18 @@ function renderAdminPredictions() {
   const user = getSelectedAdminUser();
   if (!user) return `<div class="empty-list compact-empty">请选择一个用户</div>`;
 
-  const deleteDisabled = Number(user.prediction_count || 0) <= 0 ? "disabled" : "";
+  const userAwardPredictions = state.awardPredictions.filter((prediction) => prediction.user_id === user.user_id);
+  const awardPredictionCount = Math.max(Number(user.award_prediction_count || 0), userAwardPredictions.length);
+  const totalPredictionCount = Number(user.prediction_count || 0) + awardPredictionCount;
+  const deleteDisabled = totalPredictionCount <= 0 ? "disabled" : "";
   const deleteUserDisabled = user.user_id === state.authSession?.user?.id ? "disabled" : "";
   const subtractDisabled = Number(user.point_balance || 0) <= 0 ? "disabled" : "";
-  const records = state.adminPredictions.length
-    ? state.adminPredictions.map((prediction) => renderPredictionCard(prediction, false)).join("")
+  const matchRecords = state.adminPredictions.map((prediction) => renderPredictionCard(prediction, false)).join("");
+  const awardRecords = userAwardPredictions
+    .map(renderAdminAwardPredictionCard)
+    .join("");
+  const records = matchRecords || awardRecords
+    ? `${matchRecords}${awardRecords}`
     : `<div class="empty-list compact-empty">这个用户没有预测记录</div>`;
 
   return `
@@ -4288,11 +4400,29 @@ function renderAdminPredictions() {
         <button type="button" class="action-button" data-action="admin-subtract-points" data-admin-user-id="${escapeHtml(user.user_id)}" ${subtractDisabled}>扣除</button>
       </div>
       <div class="admin-actions">
-        <button type="button" class="action-button danger" data-action="admin-delete-user-predictions" data-admin-user-id="${escapeHtml(user.user_id)}" ${deleteDisabled}>清空预测</button>
+        <button type="button" class="action-button danger" data-action="admin-delete-user-predictions" data-admin-user-id="${escapeHtml(user.user_id)}" ${deleteDisabled}>清理全部预测</button>
         <button type="button" class="action-button danger" data-action="admin-delete-user" data-admin-user-id="${escapeHtml(user.user_id)}" ${deleteUserDisabled}>删除用户</button>
       </div>
     </div>
     ${records}
+  `;
+}
+
+function renderAdminAwardPredictionCard(prediction) {
+  return `
+    <article class="prediction-card">
+      <div class="prediction-card-head">
+        <strong>${escapeHtml(AWARD_LABELS[prediction.award_type] || "奖项预测")}</strong>
+        <span>${escapeHtml(formatDateFull(prediction.created_at))}</span>
+      </div>
+      <div class="prediction-card-body">
+        <span>${escapeHtml(prediction.candidate_name)}</span>
+        <span>${escapeHtml(prediction.candidate_team || "")}</span>
+      </div>
+      <div class="prediction-card-foot">
+        <span>已确认 · 不可修改</span>
+      </div>
+    </article>
   `;
 }
 
@@ -4420,6 +4550,14 @@ function normalizeComboLegs(value) {
     }
   }
   return Array.isArray(legs) ? legs.filter((leg) => leg && typeof leg === "object") : [];
+}
+
+function buildComboPredictionSignature(legs) {
+  return normalizeComboLegs(legs)
+    .map((leg) => `${cleanText(leg.match_id)}:${cleanText(leg.outcome)}`)
+    .filter((part) => !part.startsWith(":"))
+    .sort()
+    .join("|");
 }
 
 function formatComboLeg(leg) {
