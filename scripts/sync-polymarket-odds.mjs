@@ -1,12 +1,16 @@
 import fs from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 const DEFAULT_SCHEDULE_FILE = "data/worldcup26-games.json";
 const DEFAULT_OUTPUT_FILE = "data/polymarket-odds.json";
 const GAMMA_API_BASE = "https://gamma-api.polymarket.com";
 const WORLD_CUP_TAG_ID = "102232";
 const MAX_EVENT_AGE_MS = 12 * 60 * 60 * 1000;
-const MAX_SETTLED_EVENT_AGE_MS = 48 * 60 * 60 * 1000;
+const DEFAULT_SETTLED_EVENT_LOOKBACK_MS = 48 * 60 * 60 * 1000;
+const SETTLED_EVENT_CUTOFF_PADDING_MS = 24 * 60 * 60 * 1000;
+const CLOSED_EVENT_PAGE_SIZE = 100;
+const MAX_CLOSED_EVENT_PAGES = 20;
 
 const STADIUM_OFFSETS = {
   1: -360,
@@ -65,15 +69,18 @@ const [scheduleArg = DEFAULT_SCHEDULE_FILE, outputArg = DEFAULT_OUTPUT_FILE] = p
 const schedulePath = path.resolve(scheduleArg);
 const outputPath = path.resolve(outputArg);
 
-main().catch((error) => {
-  console.error(`Polymarket odds sync failed: ${error.message}`);
-  process.exitCode = 1;
-});
+const isMain = process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
+if (isMain) {
+  main().catch((error) => {
+    console.error(`Polymarket odds sync failed: ${error.message}`);
+    process.exitCode = 1;
+  });
+}
 
 async function main() {
   const schedule = readSchedule(schedulePath);
   const previous = readJsonIfExists(outputPath);
-  const { openEvents, closedEvents } = await fetchWorldCupEvents();
+  const { openEvents, closedEvents } = await fetchWorldCupEvents(schedule, previous);
   const groups = groupPolymarketEvents(openEvents);
   const matches = [];
   const unmatchedEvents = [];
@@ -185,15 +192,16 @@ function buildSettledResult(match, scheduleMatch) {
     : resolvedScore.home < resolvedScore.away
       ? "away"
       : "draw";
-  if (!resolvedOutcome || resolvedOutcome[1] < 0.99 || resolvedOutcome[0] !== scoreOutcome) return null;
+  if (!resolvedOutcome || !(resolvedOutcome[1] >= 0.99) || resolvedOutcome[0] !== scoreOutcome) return null;
 
   return {
     matchId: match.matchId,
     kickoffUtc: match.kickoffUtc,
     homeScore: resolvedScore.home,
     awayScore: resolvedScore.away,
-    eventSlug: match.exactScore.eventSlug,
-    resolvedAt: match.exactScore.updatedAt || match.wdl.updatedAt || new Date().toISOString(),
+    eventSlug: cleanText(match.exactScore?.eventSlug),
+    resolvedAt: cleanText(match.exactScore?.updatedAt) || cleanText(match.wdl?.updatedAt) || new Date().toISOString(),
+    resolutionVerified: true,
   };
 }
 
@@ -229,10 +237,11 @@ function normalizeScheduleGame(game) {
     awayKey: teamKey(awayAlt),
     placeholder: isPlaceholder(homeAlt) || isPlaceholder(awayAlt),
     finished: ["true", "1", "yes"].includes(cleanText(game.finished).toLowerCase()),
+    stage: cleanText(game.type).toLowerCase(),
   };
 }
 
-async function fetchWorldCupEvents() {
+async function fetchWorldCupEvents(schedule, previous) {
   const openParams = new URLSearchParams({
     tag_id: WORLD_CUP_TAG_ID,
     active: "true",
@@ -241,16 +250,10 @@ async function fetchWorldCupEvents() {
     order: "startTime",
     ascending: "true",
   });
-  const closedParams = new URLSearchParams({
-    tag_id: WORLD_CUP_TAG_ID,
-    closed: "true",
-    limit: "100",
-    order: "startTime",
-    ascending: "false",
-  });
+  const settledCutoffMs = getSettledEventCutoffMs(schedule, previous);
   const [openEvents, closedEvents] = await Promise.all([
     fetchJson(`${GAMMA_API_BASE}/events?${openParams.toString()}`),
-    fetchJson(`${GAMMA_API_BASE}/events?${closedParams.toString()}`),
+    fetchClosedWorldCupEvents(settledCutoffMs),
   ]);
   if (!Array.isArray(openEvents) || !Array.isArray(closedEvents)) {
     throw new Error("Polymarket events response was not an array.");
@@ -261,8 +264,64 @@ async function fetchWorldCupEvents() {
   });
   return {
     openEvents: filterByAge(openEvents, MAX_EVENT_AGE_MS),
-    closedEvents: filterByAge(closedEvents, MAX_SETTLED_EVENT_AGE_MS),
+    closedEvents: closedEvents.filter((event) => {
+      const start = new Date(event.startTime || event.startDate || event.endDate || 0).getTime();
+      return Number.isFinite(start) && start >= settledCutoffMs;
+    }),
   };
+}
+
+function getSettledEventCutoffMs(schedule, previous) {
+  const verifiedMatchIds = new Set(
+    (Array.isArray(previous?.settledResults) ? previous.settledResults : [])
+      .filter((result) => result?.resolutionVerified === true)
+      .map((result) => cleanText(result.matchId))
+      .filter(Boolean),
+  );
+  const unresolvedKickoffs = schedule
+    .filter(
+      (match) =>
+        match.finished &&
+        match.stage !== "group" &&
+        !verifiedMatchIds.has(match.id) &&
+        Number.isFinite(match.kickoffMs),
+    )
+    .map((match) => match.kickoffMs);
+  if (unresolvedKickoffs.length) {
+    return Math.min(...unresolvedKickoffs) - SETTLED_EVENT_CUTOFF_PADDING_MS;
+  }
+  return Date.now() - DEFAULT_SETTLED_EVENT_LOOKBACK_MS;
+}
+
+async function fetchClosedWorldCupEvents(cutoffMs) {
+  const events = [];
+  const seenIds = new Set();
+  for (let page = 0; page < MAX_CLOSED_EVENT_PAGES; page += 1) {
+    const params = new URLSearchParams({
+      tag_id: WORLD_CUP_TAG_ID,
+      closed: "true",
+      limit: String(CLOSED_EVENT_PAGE_SIZE),
+      offset: String(page * CLOSED_EVENT_PAGE_SIZE),
+      order: "startTime",
+      ascending: "false",
+    });
+    const rows = await fetchJson(`${GAMMA_API_BASE}/events?${params.toString()}`);
+    if (!Array.isArray(rows)) throw new Error("Polymarket closed events response was not an array.");
+
+    for (const event of rows) {
+      const key = cleanText(event.id || event.slug);
+      if (!key || seenIds.has(key)) continue;
+      seenIds.add(key);
+      events.push(event);
+    }
+
+    const startTimes = rows
+      .map((event) => new Date(event.startTime || event.startDate || event.endDate || 0).getTime())
+      .filter(Number.isFinite);
+    const oldestStartMs = startTimes.length ? Math.min(...startTimes) : Number.NaN;
+    if (rows.length < CLOSED_EVENT_PAGE_SIZE || (Number.isFinite(oldestStartMs) && oldestStartMs < cutoffMs)) break;
+  }
+  return events;
 }
 
 async function fetchJson(url) {
@@ -514,3 +573,10 @@ function teamKey(value) {
 function cleanText(value) {
   return String(value ?? "").trim();
 }
+
+export {
+  buildSettledResult,
+  findScheduleMatch,
+  getSettledEventCutoffMs,
+  teamKey,
+};

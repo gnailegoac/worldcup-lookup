@@ -3,11 +3,18 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const resultSyncScript = path.join(root, "scripts", "sync-match-results.mjs");
+const oddsSyncScript = path.join(root, "scripts", "sync-polymarket-odds.mjs");
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "worldcup-lookup-reliability-"));
+const {
+  buildSettledResult,
+  findScheduleMatch,
+  getSettledEventCutoffMs,
+  teamKey,
+} = await import(pathToFileURL(oddsSyncScript).href);
 
 function runResultFixture(game, settledResults = []) {
   const scheduleFile = path.join(tempDir, "schedule.json");
@@ -47,34 +54,75 @@ try {
   });
   assert.match(prematureKnockoutOutput, /Prepared 0 settled match result/);
 
+  const unverifiedKnockoutOutput = runResultFixture(
+    { ...baseGame, id: "unverified", type: "r16", home_score: "2", away_score: "1" },
+    [{ matchId: "worldcup26-unverified", homeScore: 1, awayScore: 1 }],
+  );
+  assert.match(unverifiedKnockoutOutput, /Prepared 0 settled match result/);
+
   const marketOverrideOutput = runResultFixture(
     { ...baseGame, id: "extra-time", type: "r16", home_score: "3", away_score: "2" },
-    [{ matchId: "worldcup26-extra-time", homeScore: 2, awayScore: 2 }],
+    [{ matchId: "worldcup26-extra-time", homeScore: 2, awayScore: 2, resolutionVerified: true }],
   );
   assert.match(marketOverrideOutput, /First result: worldcup26-extra-time 2-2/);
 } finally {
   fs.rmSync(tempDir, { recursive: true, force: true });
 }
 
-const oddsCache = JSON.parse(fs.readFileSync(path.join(root, "data", "polymarket-odds.json"), "utf8"));
-const capeVerdeMatch = oddsCache.matches.find((match) => match.matchId === "worldcup26-86");
-assert.equal(capeVerdeMatch?.homeAlt, "Argentina");
-assert.equal(capeVerdeMatch?.awayAlt, "Cabo Verde");
-assert.ok(!oddsCache.unmatchedEvents.some((event) => event.slug === "fifwc-arg-cvi-2026-07-03"));
-
-const belgiumSenegal = oddsCache.settledResults.find((result) => result.matchId === "worldcup26-82");
-assert.deepEqual(
-  { homeScore: belgiumSenegal?.homeScore, awayScore: belgiumSenegal?.awayScore },
-  { homeScore: 2, awayScore: 2 },
+const scheduleMatch = { finished: true };
+const exactScore = {
+  scores: [{ home: 2, away: 1, rawProbability: 1 }],
+  eventSlug: "fixture-exact-score",
+  updatedAt: "",
+};
+assert.equal(
+  buildSettledResult({ matchId: "fixture", kickoffUtc: baseGame.local_date, exactScore, wdl: null }, scheduleMatch),
+  null,
 );
+const verifiedResult = buildSettledResult(
+  {
+    matchId: "fixture",
+    kickoffUtc: "2026-07-02T18:00:00Z",
+    exactScore,
+    wdl: { raw: { homeWin: 1, draw: 0, awayWin: 0 }, updatedAt: "2026-07-02T20:00:00Z" },
+  },
+  scheduleMatch,
+);
+assert.deepEqual(
+  { homeScore: verifiedResult?.homeScore, awayScore: verifiedResult?.awayScore, verified: verifiedResult?.resolutionVerified },
+  { homeScore: 2, awayScore: 1, verified: true },
+);
+
+const kickoffUtc = "2026-07-03T01:00:00Z";
+const aliasMatch = findScheduleMatch(
+  [{
+    id: "worldcup26-alias",
+    kickoffMs: new Date(kickoffUtc).getTime(),
+    homeKey: teamKey("Argentina"),
+    awayKey: teamKey("Cape Verde"),
+    placeholder: false,
+  }],
+  { kickoffUtc, homeAlt: "Argentina", awayAlt: "Cabo Verde" },
+);
+assert.equal(aliasMatch?.id, "worldcup26-alias");
+
+const unverifiedCutoff = getSettledEventCutoffMs(
+  [{ id: "worldcup26-old", finished: true, stage: "r16", kickoffMs: new Date(kickoffUtc).getTime() }],
+  { settledResults: [{ matchId: "worldcup26-old" }] },
+);
+assert.ok(unverifiedCutoff < new Date(kickoffUtc).getTime());
 
 const workflow = fs.readFileSync(path.join(root, ".github", "workflows", "sync-worldcup-schedule.yml"), "utf8");
 assert.match(workflow, /concurrency:\s+group: worldcup-schedule-sync\s+cancel-in-progress: false/);
 assert.ok(workflow.indexOf("Sync settled match results") < workflow.indexOf("Commit schedule cache"));
+assert.ok(workflow.indexOf("Run reliability checks") < workflow.indexOf("Fetch schedule cache"));
+assert.match(workflow, /name: Sync settled match results[^\r\n]*\s+continue-on-error: true/);
 
 const schema = fs.readFileSync(path.join(root, "supabase", "schema.sql"), "utf8");
 assert.match(schema, /select predictions\.\* into locked_prediction[\s\S]*?where predictions\.id = assessed\.id\s+for update;/);
 assert.match(schema, /desired_payout - coalesce\(locked_prediction\.payout_points, 0\)/);
+assert.match(schema, /order by predictions\.match_kickoff_utc, predictions\.created_at, predictions\.id/);
+assert.match(schema, /left join lateral \([\s\S]*?unique_result[\s\S]*?\) results on true/);
 assert.match(schema, /create table if not exists public\.champion_picks/);
 assert.match(schema, /create or replace function public\.select_champion_pick\(team_code_value text\)/);
 assert.equal((schema.match(/raise exception 'champion pick required'/g) || []).length, 2);
@@ -85,6 +133,9 @@ assert.match(app, /url: pageConfig\.url \|\| localStorage\.getItem\(SUPABASE_URL
 assert.match(app, /async signUp\(\{ email, password, data \}\)[\s\S]*?JSON\.stringify\(\{ email, password, data \}\)/);
 assert.match(app, /data-action="select-champion-team"/);
 assert.match(app, /class="leaderboard-champion/);
+assert.match(app, /if \(state\.isSubmittingCombo\) return;/);
+assert.match(app, /submitButton\.disabled = state\.isSubmittingCombo \|\| !valid/);
+assert.match(app, /state\.comboDraft = \{\s+stakePoints:/);
 
 const achievementBlock = app.slice(
   app.indexOf("const ACHIEVEMENT_DEFINITIONS ="),

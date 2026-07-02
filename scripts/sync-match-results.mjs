@@ -83,7 +83,7 @@ function buildSettledMatchResultsPayload(rawPayload, polymarketPayload) {
   }
   const settledByMatchId = new Map(
     (Array.isArray(polymarketPayload?.settledResults) ? polymarketPayload.settledResults : [])
-      .filter((result) => cleanText(result?.matchId))
+      .filter((result) => result?.resolutionVerified === true && cleanText(result?.matchId))
       .map((result) => [cleanText(result.matchId), result]),
   );
 
@@ -112,6 +112,8 @@ function normalizeWorldCup26GameResult(game, settledByMatchId) {
   const hasMarketResult = marketHomeScore !== null && marketAwayScore !== null;
   const sourceHomeScore = readScore(game.home_score);
   const sourceAwayScore = readScore(game.away_score);
+  const stage = cleanText(game.type).toLowerCase();
+  if (stage !== "group" && !hasMarketResult) return null;
   if (!hasMarketResult && (sourceHomeScore === null || sourceAwayScore === null)) return null;
   const homeScore = hasMarketResult ? marketHomeScore : sourceHomeScore;
   const awayScore = hasMarketResult ? marketAwayScore : sourceAwayScore;

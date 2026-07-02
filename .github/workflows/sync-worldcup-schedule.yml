@@ -8,6 +8,8 @@ on:
       - "scripts/sync-match-results.mjs"
       - "scripts/sync-polymarket-odds.mjs"
       - "scripts/sync-prediction-markets.mjs"
+      - "scripts/reliability-check.mjs"
+      - "scripts/probability-check.mjs"
   schedule:
     - cron: "*/5 * * * *"
   workflow_dispatch:
@@ -25,6 +27,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Run reliability checks
+        run: |
+          node scripts/reliability-check.mjs
+          node scripts/probability-check.mjs
 
       - name: Fetch schedule cache
         run: |
@@ -47,6 +54,7 @@ jobs:
         run: node scripts/sync-prediction-markets.mjs data/worldcup26-games.json data/polymarket-odds.json
 
       - name: Sync settled match results to Supabase
+        continue-on-error: true
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}

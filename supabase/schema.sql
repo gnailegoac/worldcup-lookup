@@ -674,7 +674,7 @@ as $$
     select
       predictions.is_correct,
       sum(case when predictions.is_correct is true then 0 else 1 end) over (
-        order by predictions.settled_at, predictions.id
+        order by predictions.match_kickoff_utc, predictions.created_at, predictions.id
       ) as miss_group
     from public.predictions predictions
     where predictions.user_id = target_user_id
@@ -1484,7 +1484,9 @@ begin
             end
           else false
         end as correct_value,
-        results.home_score::text || '-' || results.away_score::text as result_label
+        results.home_score::text || '-' || results.away_score::text as result_label,
+        results.home_score as result_home_score,
+        results.away_score as result_away_score
       from public.predictions predictions
       join lateral (
         select match_results.*
@@ -1522,13 +1524,42 @@ begin
         string_agg(
           results.home_score::text || '-' || results.away_score::text,
           ', ' order by legs.leg_order
-        ) as result_label
+        ) as result_label,
+        null::integer as result_home_score,
+        null::integer as result_away_score
       from public.predictions predictions
       cross join lateral jsonb_array_elements(predictions.combo_legs)
         with ordinality as legs(leg, leg_order)
-      left join public.match_results results
-        on results.match_id = legs.leg ->> 'match_id'
-        and results.status = 'finished'
+      left join lateral (
+        select match_results.*
+        from public.match_results match_results
+        where match_results.status = 'finished'
+          and (
+            match_results.match_id = legs.leg ->> 'match_id'
+            or (
+              nullif(legs.leg ->> 'kickoff_utc', '') is not null
+              and match_results.match_kickoff_utc is not null
+              and abs(extract(epoch from (
+                match_results.match_kickoff_utc - (legs.leg ->> 'kickoff_utc')::timestamptz
+              ))) <= 15 * 60
+              and 1 = (
+                select count(*)
+                from public.match_results unique_result
+                where unique_result.status = 'finished'
+                  and unique_result.match_kickoff_utc is not null
+                  and abs(extract(epoch from (
+                    unique_result.match_kickoff_utc - (legs.leg ->> 'kickoff_utc')::timestamptz
+                  ))) <= 15 * 60
+              )
+            )
+          )
+        order by
+          case when match_results.match_id = legs.leg ->> 'match_id' then 0 else 1 end,
+          abs(extract(epoch from (
+            match_results.match_kickoff_utc - (legs.leg ->> 'kickoff_utc')::timestamptz
+          ))) nulls last
+        limit 1
+      ) results on true
       where predictions.prediction_type = 'combo'
       group by predictions.id
       having count(*) between 2 and 8
@@ -1539,7 +1570,12 @@ begin
       union all
       select * from combo_assessed
     )
-    select predictions.*, all_assessed.correct_value, all_assessed.result_label
+    select
+      predictions.*,
+      all_assessed.correct_value,
+      all_assessed.result_label,
+      all_assessed.result_home_score,
+      all_assessed.result_away_score
     from public.predictions predictions
     join all_assessed on all_assessed.prediction_id = predictions.id
     where predictions.stake_points is not null
@@ -1572,6 +1608,19 @@ begin
       for update;
 
       if found then
+        correct_value := case
+          when locked_prediction.prediction_type = 'score' then
+            locked_prediction.home_score = assessed.result_home_score
+            and locked_prediction.away_score = assessed.result_away_score
+          when locked_prediction.prediction_type = 'outcome' then
+            locked_prediction.outcome = case
+              when assessed.result_home_score > assessed.result_away_score then 'home'
+              when assessed.result_home_score < assessed.result_away_score then 'away'
+              else 'draw'
+            end
+          else assessed.correct_value
+        end;
+
         desired_payout := case
           when correct_value then round(locked_prediction.stake_points / locked_prediction.model_probability, 4)
           else 0

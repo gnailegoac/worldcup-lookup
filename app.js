@@ -680,10 +680,14 @@ const state = {
   predictionNotice: "",
   comboPredictionNotice: "",
   comboSchemaMissing: false,
+  comboDraft: { stakePoints: null, selections: {} },
+  isSubmittingCombo: false,
   predictionProfile: { championTeamCode: "", achievements: [] },
   predictionProfileNotice: "",
   predictionProfileSchemaMissing: false,
+  championDraftTeamCode: "",
   isSavingChampionPick: false,
+  polymarketSettledResults: new Map(),
   pointBalance: null,
   pointSchemaMissing: false,
   awardPredictionNotice: "",
@@ -848,7 +852,7 @@ function bindEvents() {
   els.matchDetail.addEventListener("click", handleDetailAction);
   if (els.comboPredictionPanel) {
     els.comboPredictionPanel.addEventListener("change", handleComboPredictionChange);
-    els.comboPredictionPanel.addEventListener("input", updateComboPredictionPreview);
+    els.comboPredictionPanel.addEventListener("input", handleComboPredictionInput);
     els.comboPredictionPanel.addEventListener("click", (event) => {
       if (event.target.closest("[data-action='submit-combo-prediction']")) submitComboPrediction();
     });
@@ -879,6 +883,11 @@ function bindEvents() {
   });
   els.signOutButton.addEventListener("click", signOut);
   if (els.predictionProfilePanel) {
+    els.predictionProfilePanel.addEventListener("change", (event) => {
+      if (event.target.matches("#championTeamSelect")) {
+        state.championDraftTeamCode = normalizeChampionTeamCode(event.target.value);
+      }
+    });
     els.predictionProfilePanel.addEventListener("click", (event) => {
       if (event.target.closest("[data-action='select-champion-team']")) selectChampionTeam();
     });
@@ -999,7 +1008,7 @@ function renderPredictionProfilePanel() {
         <select id="championTeamSelect" ${state.predictionProfileSchemaMissing || profileBusy ? "disabled" : ""}>
           <option value="">选择球队</option>
           ${CHAMPION_TEAMS.map((team) => `
-            <option value="${escapeHtml(team.code)}">${escapeHtml(team.name)} · ${escapeHtml(team.code)}</option>
+            <option value="${escapeHtml(team.code)}" ${team.code === state.championDraftTeamCode ? "selected" : ""}>${escapeHtml(team.name)} · ${escapeHtml(team.code)}</option>
           `).join("")}
         </select>
         <button
@@ -1073,7 +1082,7 @@ async function selectChampionTeam() {
   }
 
   const select = els.predictionProfilePanel?.querySelector("#championTeamSelect");
-  const teamCode = normalizeChampionTeamCode(select?.value);
+  const teamCode = normalizeChampionTeamCode(select?.value || state.championDraftTeamCode);
   const team = getChampionTeam(teamCode);
   if (!team) {
     state.predictionProfileNotice = "请选择冠军球队。";
@@ -1097,11 +1106,16 @@ async function selectChampionTeam() {
     state.predictionProfileNotice = state.predictionProfileSchemaMissing
       ? "请先重新运行 supabase/schema.sql。"
       : formatPointError(result.error);
+    if (/champion pick already locked/i.test(result.error.message || "")) {
+      await loadPredictions();
+      return;
+    }
     renderPredictionProfilePanel();
     return;
   }
 
   state.predictionProfile.championTeamCode = normalizeChampionTeamCode(result.data) || team.code;
+  state.championDraftTeamCode = "";
   state.predictionProfileNotice = `冠军球队已锁定：${team.name}`;
   await loadPredictions();
 }
@@ -1320,6 +1334,12 @@ function mergePolymarketOddsCache(payload) {
   const items = (Array.isArray(payload?.matches) ? payload.matches : [])
     .map(normalizePolymarketCacheMatch)
     .filter(Boolean);
+  state.polymarketSettledResults = new Map(
+    (Array.isArray(payload?.settledResults) ? payload.settledResults : [])
+      .map(normalizePolymarketSettledResult)
+      .filter(Boolean)
+      .map((result) => [result.matchId, result]),
+  );
   let updated = 0;
 
   items.forEach((item) => {
@@ -1331,6 +1351,17 @@ function mergePolymarketOddsCache(payload) {
 
   if (updated) state.matches = state.matches.sort(sortAscending);
   return { total: items.length, updated };
+}
+
+function normalizePolymarketSettledResult(raw) {
+  if (!raw || raw.resolutionVerified !== true) return null;
+  const matchId = cleanText(raw.matchId || raw.match_id);
+  const homeScore = Number(raw.homeScore ?? raw.home_score);
+  const awayScore = Number(raw.awayScore ?? raw.away_score);
+  if (!matchId || !Number.isInteger(homeScore) || homeScore < 0 || !Number.isInteger(awayScore) || awayScore < 0) {
+    return null;
+  }
+  return { matchId, homeScore, awayScore };
 }
 
 function normalizePolymarketCacheMatch(raw) {
@@ -1865,6 +1896,7 @@ async function submitPrediction(match) {
 }
 
 async function submitComboPrediction() {
+  if (state.isSubmittingCombo) return;
   if (!state.supabase || !state.authSession?.user) {
     setComboPredictionNotice("请先登录后再提交组合预测。");
     return;
@@ -1880,6 +1912,7 @@ async function submitComboPrediction() {
 
   const form = els.comboPredictionPanel?.querySelector("[data-combo-form]");
   if (!form) return;
+  syncComboPredictionDraft(form);
   const selections = readComboSelections(form);
   if (selections.length < COMBO_MIN_LEGS || selections.length > COMBO_MAX_LEGS) {
     setComboPredictionNotice(`请选择 ${COMBO_MIN_LEGS}-${COMBO_MAX_LEGS} 场比赛。`);
@@ -1904,35 +1937,44 @@ async function submitComboPrediction() {
       outcome: selection.outcome,
     })),
   };
+  state.isSubmittingCombo = true;
   const submitButton = form.querySelector("[data-action='submit-combo-prediction']");
   if (submitButton) submitButton.disabled = true;
   setComboPredictionNotice("正在保存组合预测...");
-  await saveUserProfile(payload.display_name);
+  try {
+    await saveUserProfile(payload.display_name);
 
-  const result = await state.supabase.rpc("submit_combo_prediction", { combo_payload: payload });
-  if (isAuthExpiredError(result.error)) {
-    await expireAuthSession();
-    return;
-  }
-  if (result.error) {
-    state.comboSchemaMissing = isMissingComboPredictionSchemaError(result.error);
-    if (state.comboSchemaMissing) {
-      state.comboPredictionNotice = "请先重新运行 supabase/schema.sql，启用组合预测后再提交。";
-      renderComboPredictionPanel();
+    const result = await state.supabase.rpc("submit_combo_prediction", { combo_payload: payload });
+    if (isAuthExpiredError(result.error)) {
+      await expireAuthSession();
       return;
     }
-    setComboPredictionNotice(`组合预测提交失败：${formatPointError(result.error)}`);
-    updateComboPredictionPreview();
-    return;
-  }
+    if (result.error) {
+      state.comboSchemaMissing = isMissingComboPredictionSchemaError(result.error);
+      state.comboPredictionNotice = state.comboSchemaMissing
+        ? "请先重新运行 supabase/schema.sql，启用组合预测后再提交。"
+        : `组合预测提交失败：${formatPointError(result.error)}`;
+      return;
+    }
 
-  const saved = result.data?.prediction || {};
-  const probability = Number(saved.model_probability);
-  state.pointBalance = Number(result.data?.balance ?? state.pointBalance);
-  state.pointSchemaMissing = false;
-  state.comboSchemaMissing = false;
-  state.comboPredictionNotice = `组合预测已保存，投入 ${formatPointAmount(stakePoints)}；全中返还 ${formatPointAmount(stakePoints / probability)}。`;
-  await loadPredictions();
+    const saved = result.data?.prediction || {};
+    const probability = Number(saved.model_probability);
+    state.pointBalance = Number(result.data?.balance ?? state.pointBalance);
+    state.pointSchemaMissing = false;
+    state.comboSchemaMissing = false;
+    state.comboPredictionNotice = `组合预测已保存，投入 ${formatPointAmount(stakePoints)}；全中返还 ${formatPointAmount(stakePoints / probability)}。`;
+    resetComboPredictionDraft();
+    state.isSubmittingCombo = false;
+    await loadPredictions();
+  } catch (error) {
+    state.comboPredictionNotice = `组合预测提交失败：${getErrorMessage(error)}`;
+  } finally {
+    state.isSubmittingCombo = false;
+    if (state.authSession?.user) {
+      if (state.comboSchemaMissing) renderComboPredictionPanel();
+      else updateComboPredictionPreview();
+    }
+  }
 }
 
 function readComboSelections(form) {
@@ -1960,8 +2002,35 @@ function handleComboPredictionChange(event) {
     const outcomeSelect = row?.querySelector("[data-combo-outcome]");
     if (outcomeSelect) outcomeSelect.disabled = !event.target.checked;
   }
+  syncComboPredictionDraft(form);
   setComboPredictionNotice(notice);
   updateComboPredictionPreview();
+}
+
+function handleComboPredictionInput(event) {
+  const form = event.target.closest("[data-combo-form]");
+  if (!form) return;
+  syncComboPredictionDraft(form);
+  updateComboPredictionPreview();
+}
+
+function syncComboPredictionDraft(form) {
+  const stakeInput = form?.elements?.comboStakePoints;
+  const selections = {};
+  for (const row of form?.querySelectorAll("[data-combo-row]") || []) {
+    if (!row.querySelector("[data-combo-match]")?.checked) continue;
+    const matchId = cleanText(row.dataset.comboMatchId);
+    const outcome = cleanText(row.querySelector("[data-combo-outcome]")?.value);
+    if (matchId && ["home", "draw", "away"].includes(outcome)) selections[matchId] = outcome;
+  }
+  state.comboDraft = {
+    stakePoints: stakeInput ? stakeInput.value : state.comboDraft.stakePoints,
+    selections,
+  };
+}
+
+function resetComboPredictionDraft() {
+  state.comboDraft = { stakePoints: null, selections: {} };
 }
 
 function updateComboPredictionPreview() {
@@ -1986,7 +2055,7 @@ function updateComboPredictionPreview() {
     stakePoints <= Number(state.pointBalance) &&
     combinedProbability > 0;
 
-  submitButton.disabled = !valid;
+  submitButton.disabled = state.isSubmittingCombo || !valid;
   if (selections.length < COMBO_MIN_LEGS) {
     preview.textContent = `已选择 ${selections.length} 场`;
     return;
@@ -2238,7 +2307,10 @@ function resetPredictionProfile() {
   state.predictionProfile = { championTeamCode: "", achievements: [] };
   state.predictionProfileNotice = "";
   state.predictionProfileSchemaMissing = false;
+  state.championDraftTeamCode = "";
   state.isSavingChampionPick = false;
+  state.isSubmittingCombo = false;
+  resetComboPredictionDraft();
 }
 
 async function loadPredictions() {
@@ -2349,8 +2421,9 @@ async function loadPredictions() {
   }
 
   if (predictionProfileResult.error) {
-    state.predictionProfile = { championTeamCode: "", achievements: [] };
-    state.predictionProfileSchemaMissing = isMissingPredictionProfileSchemaError(predictionProfileResult.error);
+    const schemaMissing = isMissingPredictionProfileSchemaError(predictionProfileResult.error);
+    state.predictionProfileSchemaMissing = schemaMissing;
+    if (schemaMissing) state.predictionProfile = { championTeamCode: "", achievements: [] };
     state.predictionProfileNotice = state.predictionProfileSchemaMissing
       ? "请先更新数据库后选择冠军球队。"
       : `读取冠军和成就失败：${predictionProfileResult.error.message}`;
@@ -2647,19 +2720,25 @@ async function syncSettledMatchResults() {
 function buildSettledMatchResultsPayload() {
   return state.matches
     .filter(isFinishedMatch)
-    .map((match) => ({
-      match_id: match.id,
-      match_label: `${match.home} vs ${match.away}`,
-      match_kickoff_utc: match.kickoffUtc,
-      home_team: match.home,
-      away_team: match.away,
-      home_score: Number(match.result.home),
-      away_score: Number(match.result.away),
-      status: "finished",
-      source: match.source || "WorldCupLookup schedule sync",
-    }))
+    .map((match) => {
+      const marketResult = state.polymarketSettledResults.get(match.id);
+      const isGroupStage = cleanText(match.stage).toLowerCase() === "group";
+      if (!isGroupStage && !marketResult) return null;
+      return {
+        match_id: match.id,
+        match_label: `${match.home} vs ${match.away}`,
+        match_kickoff_utc: match.kickoffUtc,
+        home_team: match.home,
+        away_team: match.away,
+        home_score: marketResult ? marketResult.homeScore : Number(match.result.home),
+        away_score: marketResult ? marketResult.awayScore : Number(match.result.away),
+        status: "finished",
+        source: marketResult ? "Polymarket verified 90-minute result" : match.source || "WorldCupLookup schedule sync",
+      };
+    })
     .filter(
       (result) =>
+        result &&
         cleanText(result.match_id) &&
         Number.isFinite(result.home_score) &&
         Number.isFinite(result.away_score) &&
@@ -3646,10 +3725,10 @@ function renderComboPredictionPanel() {
     !state.predictionProfileSchemaMissing &&
     !state.pointSchemaMissing &&
     !state.comboSchemaMissing &&
+    !state.isSubmittingCombo &&
     balance >= 1 &&
     matches.length >= COMBO_MIN_LEGS
   );
-  const disabledAttr = enabled ? "" : "disabled";
   const status = !state.supabase
     ? "未连接 Supabase"
     : !user
@@ -3658,16 +3737,19 @@ function renderComboPredictionPanel() {
         ? "冠军选择功能待启用"
         : !championReady
           ? "请先确认冠军球队"
-          : state.comboSchemaMissing
-            ? "组合预测待启用"
-            : state.pointSchemaMissing
+          : state.isSubmittingCombo
+            ? "正在提交..."
+            : state.comboSchemaMissing
               ? "组合预测待启用"
-              : balance < 1
-                ? "点数不足，请联系管理员"
-                : matches.length < COMBO_MIN_LEGS
-                  ? "暂无足够的未开赛比赛"
-                  : `可用 ${formatPointAmount(balance)}`;
+              : state.pointSchemaMissing
+                ? "组合预测待启用"
+                : balance < 1
+                  ? "点数不足，请联系管理员"
+                  : matches.length < COMBO_MIN_LEGS
+                    ? "暂无足够的未开赛比赛"
+                    : `可用 ${formatPointAmount(balance)}`;
   const defaultStake = Math.max(1, Math.min(10, balance));
+  const draftStake = state.comboDraft.stakePoints === null ? defaultStake : state.comboDraft.stakePoints;
 
   els.comboPredictionPanel.innerHTML = `
     <div class="prediction-list-head">
@@ -3681,12 +3763,12 @@ function renderComboPredictionPanel() {
     ${matches.length >= COMBO_MIN_LEGS ? `
       <form class="combo-form" data-combo-form data-combo-disabled="${enabled ? "false" : "true"}">
         <div class="combo-match-list">
-          ${matches.map((match) => renderComboMatchRow(match, disabledAttr)).join("")}
+          ${matches.map((match) => renderComboMatchRow(match, enabled)).join("")}
         </div>
         <div class="combo-controls">
           <label>
             本次投入
-            <input name="comboStakePoints" type="number" min="1" max="${balance}" step="0.01" value="${defaultStake}" ${disabledAttr} />
+            <input name="comboStakePoints" type="number" min="1" max="${balance}" step="0.01" value="${escapeHtml(draftStake)}" ${enabled ? "" : "disabled"} />
           </label>
           <div class="combo-preview" data-combo-preview>已选择 0 场</div>
           <button type="button" class="action-button primary" data-action="submit-combo-prediction" disabled>提交组合</button>
@@ -3694,26 +3776,31 @@ function renderComboPredictionPanel() {
       </form>
     ` : `<div class="empty-list compact-empty">暂无可组合的未开赛比赛</div>`}
   `;
+  updateComboPredictionPreview();
 }
 
-function renderComboMatchRow(match, disabledAttr) {
+function renderComboMatchRow(match, enabled) {
   const probability = computeProbability(match);
+  const selectedOutcome = cleanText(state.comboDraft.selections[match.id]);
+  const selected = ["home", "draw", "away"].includes(selectedOutcome);
+  const outcome = selected ? selectedOutcome : "home";
   return `
     <div class="combo-match-row" data-combo-row data-combo-match-id="${escapeHtml(match.id)}">
       <input
         type="checkbox"
         data-combo-match
         aria-label="选择 ${escapeHtml(match.home)} 对 ${escapeHtml(match.away)}"
-        ${disabledAttr}
+        ${selected ? "checked" : ""}
+        ${enabled ? "" : "disabled"}
       />
       <div class="combo-match-info">
         <strong>${escapeHtml(match.home)} vs ${escapeHtml(match.away)}</strong>
         <span>${escapeHtml(formatDate(match.kickoffUtc))}</span>
       </div>
-      <select data-combo-outcome aria-label="${escapeHtml(match.home)} 对 ${escapeHtml(match.away)}的预测" disabled>
-        <option value="home">${escapeHtml(match.home)} 胜 · ${escapeHtml(formatPercent(probability.homeWin))}</option>
-        <option value="draw">平局 · ${escapeHtml(formatPercent(probability.draw))}</option>
-        <option value="away">${escapeHtml(match.away)} 胜 · ${escapeHtml(formatPercent(probability.awayWin))}</option>
+      <select data-combo-outcome aria-label="${escapeHtml(match.home)} 对 ${escapeHtml(match.away)}的预测" ${enabled && selected ? "" : "disabled"}>
+        <option value="home" ${outcome === "home" ? "selected" : ""}>${escapeHtml(match.home)} 胜 · ${escapeHtml(formatPercent(probability.homeWin))}</option>
+        <option value="draw" ${outcome === "draw" ? "selected" : ""}>平局 · ${escapeHtml(formatPercent(probability.draw))}</option>
+        <option value="away" ${outcome === "away" ? "selected" : ""}>${escapeHtml(match.away)} 胜 · ${escapeHtml(formatPercent(probability.awayWin))}</option>
       </select>
     </div>
   `;
