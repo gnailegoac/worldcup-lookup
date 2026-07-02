@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: worldcup-schedule-sync
+  cancel-in-progress: false
+
 jobs:
   sync:
     runs-on: ubuntu-latest
@@ -35,6 +39,12 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: node scripts/sync-prediction-markets.mjs data/worldcup26-games.json data/polymarket-odds.json
 
+      - name: Sync settled match results to Supabase
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: node scripts/sync-match-results.mjs data/worldcup26-games.json data/polymarket-odds.json
+
       - name: Commit schedule cache
         run: |
           git config user.name "github-actions[bot]"
@@ -42,9 +52,3 @@ jobs:
           git add data/worldcup26-games.json data/polymarket-odds.json
           git diff --cached --quiet || git commit -m "Update World Cup schedule cache"
           git push
-
-      - name: Sync settled match results to Supabase
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-        run: node scripts/sync-match-results.mjs data/worldcup26-games.json

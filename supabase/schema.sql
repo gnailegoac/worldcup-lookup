@@ -1265,6 +1265,7 @@ set search_path = public
 as $$
 declare
   assessed record;
+  locked_prediction public.predictions%rowtype;
   correct_value boolean;
   desired_payout numeric;
   payout_delta numeric;
@@ -1352,6 +1353,7 @@ begin
     where predictions.stake_points is not null
       and predictions.model_probability is not null
       and predictions.model_probability > 0
+    order by predictions.user_id, predictions.id
   loop
     correct_value := assessed.correct_value;
 
@@ -1372,38 +1374,54 @@ begin
       where accounts.user_id = assessed.user_id
       for update;
 
-      payout_delta := desired_payout - coalesce(assessed.payout_points, 0);
-      if payout_delta <> 0 then
-        current_balance := current_balance + payout_delta;
-        update public.point_accounts
-        set balance = current_balance
-        where user_id = assessed.user_id;
+      select predictions.* into locked_prediction
+      from public.predictions predictions
+      where predictions.id = assessed.id
+      for update;
 
-        perform public.record_point_transaction(
-          assessed.user_id,
-          assessed.id,
-          'prediction_settlement',
-          payout_delta,
-          current_balance,
-          case when correct_value then '预测命中返还' else '赛果更正结算调整' end,
-          jsonb_build_object(
-            'match_id', assessed.match_id,
-            'correct', correct_value,
-            'payout', desired_payout,
-            'result', assessed.result_label
-          )
-        );
+      if found then
+        desired_payout := case
+          when correct_value then round(locked_prediction.stake_points / locked_prediction.model_probability, 4)
+          else 0
+        end;
+
+        if locked_prediction.settled_at is null
+          or locked_prediction.is_correct is distinct from correct_value
+          or coalesce(locked_prediction.payout_points, 0) is distinct from desired_payout then
+          payout_delta := desired_payout - coalesce(locked_prediction.payout_points, 0);
+          if payout_delta <> 0 then
+            current_balance := current_balance + payout_delta;
+            update public.point_accounts
+            set balance = current_balance
+            where user_id = locked_prediction.user_id;
+
+            perform public.record_point_transaction(
+              locked_prediction.user_id,
+              locked_prediction.id,
+              'prediction_settlement',
+              payout_delta,
+              current_balance,
+              case when correct_value then '预测命中返还' else '赛果更正结算调整' end,
+              jsonb_build_object(
+                'match_id', locked_prediction.match_id,
+                'correct', correct_value,
+                'payout', desired_payout,
+                'result', assessed.result_label
+              )
+            );
+          end if;
+
+          update public.predictions
+          set
+            is_correct = correct_value,
+            payout_points = desired_payout,
+            settled_at = now(),
+            updated_at = now()
+          where id = locked_prediction.id;
+
+          reconciled_count := reconciled_count + 1;
+        end if;
       end if;
-
-      update public.predictions
-      set
-        is_correct = correct_value,
-        payout_points = desired_payout,
-        settled_at = now(),
-        updated_at = now()
-      where id = assessed.id;
-
-      reconciled_count := reconciled_count + 1;
     end if;
   end loop;
 

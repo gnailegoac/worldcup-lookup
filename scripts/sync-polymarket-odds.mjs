@@ -6,6 +6,7 @@ const DEFAULT_OUTPUT_FILE = "data/polymarket-odds.json";
 const GAMMA_API_BASE = "https://gamma-api.polymarket.com";
 const WORLD_CUP_TAG_ID = "102232";
 const MAX_EVENT_AGE_MS = 12 * 60 * 60 * 1000;
+const MAX_SETTLED_EVENT_AGE_MS = 48 * 60 * 60 * 1000;
 
 const STADIUM_OFFSETS = {
   1: -360,
@@ -46,6 +47,20 @@ const TEAM_CODE_OVERRIDES = {
   "United States of America": "USA",
 };
 
+const TEAM_KEY_ALIASES = {
+  caboverde: "capeverde",
+  czechrepublic: "czechia",
+  cotedivoire: "ivorycoast",
+  democraticrepublicofthecongo: "drcongo",
+  congdr: "drcongo",
+  korearepublic: "southkorea",
+  republicofkorea: "southkorea",
+  iran: "iriran",
+  turkey: "turkiye",
+  usa: "unitedstates",
+  unitedstatesofamerica: "unitedstates",
+};
+
 const [scheduleArg = DEFAULT_SCHEDULE_FILE, outputArg = DEFAULT_OUTPUT_FILE] = process.argv.slice(2);
 const schedulePath = path.resolve(scheduleArg);
 const outputPath = path.resolve(outputArg);
@@ -57,10 +72,12 @@ main().catch((error) => {
 
 async function main() {
   const schedule = readSchedule(schedulePath);
-  const events = await fetchWorldCupEvents();
-  const groups = groupPolymarketEvents(events);
+  const previous = readJsonIfExists(outputPath);
+  const { openEvents, closedEvents } = await fetchWorldCupEvents();
+  const groups = groupPolymarketEvents(openEvents);
   const matches = [];
   const unmatchedEvents = [];
+  const newlySettledResults = [];
 
   for (const group of groups) {
     const wdl = extractWdl(group.main, group.homeAlt, group.awayAlt);
@@ -81,6 +98,8 @@ async function main() {
     };
 
     matches.push(item);
+    const settledResult = buildSettledResult(item, scheduleMatch);
+    if (settledResult) newlySettledResults.push(settledResult);
     if (!scheduleMatch) {
       unmatchedEvents.push({
         slug: group.baseSlug,
@@ -91,7 +110,25 @@ async function main() {
     }
   }
 
+  for (const group of groupPolymarketEvents(closedEvents)) {
+    const wdl = extractWdl(group.main, group.homeAlt, group.awayAlt);
+    const exactScore = extractExactScore(group.exact);
+    if (!wdl || !exactScore) continue;
+    const scheduleMatch = findScheduleMatch(schedule, group);
+    const settledResult = buildSettledResult(
+      {
+        matchId: scheduleMatch?.id || "",
+        kickoffUtc: group.kickoffUtc,
+        wdl,
+        exactScore,
+      },
+      scheduleMatch,
+    );
+    if (settledResult) newlySettledResults.push(settledResult);
+  }
+
   matches.sort((a, b) => new Date(a.kickoffUtc) - new Date(b.kickoffUtc));
+  const settledResults = mergeSettledResults(previous?.settledResults, newlySettledResults);
 
   const payload = {
     source: "Polymarket Gamma API",
@@ -99,13 +136,14 @@ async function main() {
     generatedAt: new Date().toISOString(),
     matches,
     unmatchedEvents,
+    settledResults,
   };
 
-  const previous = readJsonIfExists(outputPath);
   if (
     previous &&
     stableJson(previous.matches || []) === stableJson(payload.matches) &&
-    stableJson(previous.unmatchedEvents || []) === stableJson(payload.unmatchedEvents)
+    stableJson(previous.unmatchedEvents || []) === stableJson(payload.unmatchedEvents) &&
+    stableJson(previous.settledResults || []) === stableJson(payload.settledResults)
   ) {
     console.log(`Polymarket odds unchanged: ${matches.length} rows`);
     return;
@@ -126,6 +164,46 @@ function readJsonIfExists(filePath) {
 
 function stableJson(value) {
   return JSON.stringify(value);
+}
+
+function buildSettledResult(match, scheduleMatch) {
+  if (!scheduleMatch?.finished || !match?.matchId) return null;
+  const exactScores = Array.isArray(match.exactScore?.scores) ? match.exactScore.scores : [];
+  const resolvedScore = exactScores
+    .filter((score) => Number(score?.rawProbability) >= 0.99)
+    .sort((a, b) => Number(b.rawProbability) - Number(a.rawProbability))[0];
+  if (!resolvedScore || !Number.isInteger(resolvedScore.home) || !Number.isInteger(resolvedScore.away)) return null;
+
+  const rawWdl = match.wdl?.raw || {};
+  const resolvedOutcome = [
+    ["home", Number(rawWdl.homeWin)],
+    ["draw", Number(rawWdl.draw)],
+    ["away", Number(rawWdl.awayWin)],
+  ].sort((a, b) => b[1] - a[1])[0];
+  const scoreOutcome = resolvedScore.home > resolvedScore.away
+    ? "home"
+    : resolvedScore.home < resolvedScore.away
+      ? "away"
+      : "draw";
+  if (!resolvedOutcome || resolvedOutcome[1] < 0.99 || resolvedOutcome[0] !== scoreOutcome) return null;
+
+  return {
+    matchId: match.matchId,
+    kickoffUtc: match.kickoffUtc,
+    homeScore: resolvedScore.home,
+    awayScore: resolvedScore.away,
+    eventSlug: match.exactScore.eventSlug,
+    resolvedAt: match.exactScore.updatedAt || match.wdl.updatedAt || new Date().toISOString(),
+  };
+}
+
+function mergeSettledResults(previousResults, newResults) {
+  const byMatchId = new Map();
+  for (const result of Array.isArray(previousResults) ? previousResults : []) {
+    if (cleanText(result?.matchId)) byMatchId.set(cleanText(result.matchId), result);
+  }
+  for (const result of newResults) byMatchId.set(result.matchId, result);
+  return [...byMatchId.values()].sort((a, b) => new Date(a.kickoffUtc) - new Date(b.kickoffUtc));
 }
 
 function readSchedule(filePath) {
@@ -150,11 +228,12 @@ function normalizeScheduleGame(game) {
     homeKey: teamKey(homeAlt),
     awayKey: teamKey(awayAlt),
     placeholder: isPlaceholder(homeAlt) || isPlaceholder(awayAlt),
+    finished: ["true", "1", "yes"].includes(cleanText(game.finished).toLowerCase()),
   };
 }
 
 async function fetchWorldCupEvents() {
-  const params = new URLSearchParams({
+  const openParams = new URLSearchParams({
     tag_id: WORLD_CUP_TAG_ID,
     active: "true",
     closed: "false",
@@ -162,13 +241,28 @@ async function fetchWorldCupEvents() {
     order: "startTime",
     ascending: "true",
   });
-  const events = await fetchJson(`${GAMMA_API_BASE}/events?${params.toString()}`);
-  if (!Array.isArray(events)) throw new Error("Polymarket events response was not an array.");
-  const cutoff = Date.now() - MAX_EVENT_AGE_MS;
-  return events.filter((event) => {
-    const start = new Date(event.startTime || event.startDate || event.endDate || 0).getTime();
-    return Number.isFinite(start) && start >= cutoff;
+  const closedParams = new URLSearchParams({
+    tag_id: WORLD_CUP_TAG_ID,
+    closed: "true",
+    limit: "100",
+    order: "startTime",
+    ascending: "false",
   });
+  const [openEvents, closedEvents] = await Promise.all([
+    fetchJson(`${GAMMA_API_BASE}/events?${openParams.toString()}`),
+    fetchJson(`${GAMMA_API_BASE}/events?${closedParams.toString()}`),
+  ]);
+  if (!Array.isArray(openEvents) || !Array.isArray(closedEvents)) {
+    throw new Error("Polymarket events response was not an array.");
+  }
+  const filterByAge = (events, maxAgeMs) => events.filter((event) => {
+    const start = new Date(event.startTime || event.startDate || event.endDate || 0).getTime();
+    return Number.isFinite(start) && start >= Date.now() - maxAgeMs;
+  });
+  return {
+    openEvents: filterByAge(openEvents, MAX_EVENT_AGE_MS),
+    closedEvents: filterByAge(closedEvents, MAX_SETTLED_EVENT_AGE_MS),
+  };
 }
 
 async function fetchJson(url) {
@@ -250,7 +344,7 @@ function extractWdl(event, homeAlt, awayAlt) {
 
   for (const market of event.markets) {
     const price = yesPrice(market);
-    if (!Number.isFinite(price) || price <= 0) continue;
+    if (!Number.isFinite(price) || price < 0) continue;
     const line = selectionLine(market, homeAlt, awayAlt);
     if (line === "home") {
       raw.homeWin = price;
@@ -394,7 +488,7 @@ function parseWorldCup26Date(value, stadiumId) {
   }
   const [, month, day, year, hour, minute] = match.map(Number);
   const offset = STADIUM_OFFSETS[Number(stadiumId)];
-  if (!Number.isFinite(offset)) return new Date(year, month - 1, day, hour, minute);
+  if (!Number.isFinite(offset)) return new Date(Date.UTC(year, month - 1, day, hour, minute));
   return new Date(Date.UTC(year, month - 1, day, hour, minute) - offset * 60 * 1000);
 }
 
@@ -409,11 +503,12 @@ function codeFromName(name) {
 }
 
 function teamKey(value) {
-  return cleanText(value)
+  const normalized = cleanText(value)
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/[^a-z0-9]/gi, "")
     .toLowerCase();
+  return TEAM_KEY_ALIASES[normalized] || normalized;
 }
 
 function cleanText(value) {

@@ -2039,7 +2039,7 @@ function readUsernamePassword() {
 }
 
 function usernameToInternalEmail(username) {
-  return `u_${hashString(username.toLocaleLowerCase())}${INTERNAL_AUTH_EMAIL_DOMAIN}`;
+  return `u_${hashString(username.toLowerCase())}${INTERNAL_AUTH_EMAIL_DOMAIN}`;
 }
 
 function hashString(value) {
@@ -2575,6 +2575,23 @@ async function deleteAdminUser(userId) {
   await loadPredictions();
 }
 
+function parseResponsePayload(text) {
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+function getResponseErrorMessage(payload, status) {
+  if (typeof payload === "string") {
+    const summary = payload.replace(/\s+/g, " ").trim().slice(0, 160);
+    return summary ? `HTTP ${status}: ${summary}` : `HTTP ${status}`;
+  }
+  return payload?.error_description || payload?.error || payload?.msg || payload?.message || `HTTP ${status}`;
+}
+
 function createSupabaseRestClient(projectUrl, apiKey) {
   const baseUrl = projectUrl.replace(/\/+$/, "");
   const sessionKey = `${SUPABASE_SESSION_STORAGE}:${baseUrl}`;
@@ -2636,9 +2653,9 @@ function createSupabaseRestClient(projectUrl, apiKey) {
       },
     });
     const text = await response.text();
-    const payload = text ? JSON.parse(text) : null;
+    const payload = parseResponsePayload(text);
     if (!response.ok) {
-      throw new Error(payload?.error_description || payload?.error || payload?.msg || payload?.message || `HTTP ${response.status}`);
+      throw new Error(getResponseErrorMessage(payload, response.status));
     }
     return payload;
   };
@@ -2672,11 +2689,11 @@ function createSupabaseRestClient(projectUrl, apiKey) {
           },
         };
       },
-      async signUp({ email, password }) {
+      async signUp({ email, password, data }) {
         try {
           const payload = await request("/auth/v1/signup", {
             method: "POST",
-            body: JSON.stringify({ email, password }),
+            body: JSON.stringify({ email, password, data }),
           });
           const session = normalizeSupabaseSession(payload);
           if (session) saveSession(session, "SIGNED_IN");
@@ -2794,9 +2811,9 @@ class SupabaseRestQuery {
         body: body ? JSON.stringify(body) : undefined,
       });
       const text = await response.text();
-      const data = text ? JSON.parse(text) : null;
+      const data = parseResponsePayload(text);
       if (!response.ok) {
-        throw new Error(data?.error_description || data?.error || data?.message || data?.msg || `HTTP ${response.status}`);
+        throw new Error(getResponseErrorMessage(data, response.status));
       }
       return { data, error: null };
     } catch (error) {
@@ -3161,7 +3178,7 @@ function renderDetail(match) {
 
     <div class="detail-body">
       <section>
-        <h2 class="section-title">胜平负概率</h2>
+        <h2 class="section-title">90分钟胜平负概率</h2>
         <div class="prob-bars">
           ${renderProbabilityBar(`${match.homeCode || "A"} 胜`, probability.homeWin, "home")}
           ${renderProbabilityBar("平局", probability.draw, "draw")}
@@ -3169,7 +3186,7 @@ function renderDetail(match) {
         </div>
 
         <div class="top-scores">
-          <h2 class="section-title">最可能比分</h2>
+          <h2 class="section-title">90分钟最可能比分</h2>
           ${probability.topScores.map(renderScorePill).join("")}
         </div>
 
@@ -3296,12 +3313,12 @@ function renderPredictionForm(match) {
         <label>
           类型
           <select name="predictionType" ${disabledAttr}>
-            <option value="outcome" ${predictionType === "outcome" ? "selected" : ""}>胜平负</option>
-            <option value="score" ${predictionType === "score" ? "selected" : ""}>具体比分</option>
+            <option value="outcome" ${predictionType === "outcome" ? "selected" : ""}>90分钟胜平负</option>
+            <option value="score" ${predictionType === "score" ? "selected" : ""}>90分钟比分</option>
           </select>
         </label>
         <label data-outcome-prediction-field>
-          胜平负
+          90分钟胜平负
           <select name="outcome" ${disabledAttr}>
             <option value="home" ${outcome === "home" ? "selected" : ""}>${escapeHtml(match.homeCode || "A")} 胜</option>
             <option value="draw" ${outcome === "draw" ? "selected" : ""}>平局</option>
@@ -3377,7 +3394,7 @@ function renderComboPredictionPanel() {
     <div class="prediction-list-head">
       <div>
         <h2 class="section-title">组合预测</h2>
-        <span class="combo-subtitle">胜平负 · ${COMBO_MIN_LEGS}-${COMBO_MAX_LEGS} 场</span>
+        <span class="combo-subtitle">90分钟胜平负 · ${COMBO_MIN_LEGS}-${COMBO_MAX_LEGS} 场</span>
       </div>
       <span class="combo-status">${escapeHtml(status)}</span>
     </div>
@@ -4614,7 +4631,7 @@ function parseWorldCup26Date(value, stadiumId) {
   if (!match) return parseLocalDateTime(text);
   const [, month, day, year, hour, minute] = match.map(Number);
   const stadium = WORLDCUP26_STADIUMS[Number(stadiumId)];
-  if (!stadium) return new Date(year, month - 1, day, hour, minute);
+  if (!stadium) return new Date(Date.UTC(year, month - 1, day, hour, minute));
   return new Date(Date.UTC(year, month - 1, day, hour, minute) - stadium.offsetMinutes * 60 * 1000);
 }
 
@@ -4824,8 +4841,8 @@ function getInitialReference() {
 function getSupabaseConfig() {
   const pageConfig = window.WORLD_CUP_LOOKUP_SUPABASE || {};
   return {
-    url: localStorage.getItem(SUPABASE_URL_STORAGE) || pageConfig.url || "",
-    anonKey: localStorage.getItem(SUPABASE_ANON_KEY_STORAGE) || pageConfig.anonKey || "",
+    url: pageConfig.url || localStorage.getItem(SUPABASE_URL_STORAGE) || "",
+    anonKey: pageConfig.anonKey || localStorage.getItem(SUPABASE_ANON_KEY_STORAGE) || "",
   };
 }
 

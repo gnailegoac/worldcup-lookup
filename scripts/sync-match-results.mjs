@@ -3,6 +3,7 @@ import path from "node:path";
 import process from "node:process";
 
 const DEFAULT_SCHEDULE_FILE = "data/worldcup26-games.json";
+const DEFAULT_POLYMARKET_FILE = "data/polymarket-odds.json";
 const DEFAULT_SUPABASE_URL = "https://bzcynwyopkhvqlwrrqrk.supabase.co";
 const WORLDCUP26_STADIUMS = {
   1: { offsetMinutes: -360 },
@@ -25,10 +26,13 @@ const WORLDCUP26_STADIUMS = {
 
 const args = process.argv.slice(2);
 const isDryRun = args.includes("--dry-run");
-const scheduleFile = args.find((arg) => !arg.startsWith("--")) || DEFAULT_SCHEDULE_FILE;
+const files = args.filter((arg) => !arg.startsWith("--"));
+const scheduleFile = files[0] || DEFAULT_SCHEDULE_FILE;
+const polymarketFile = files[1] || DEFAULT_POLYMARKET_FILE;
 
 const payload = readJson(scheduleFile);
-const results = buildSettledMatchResultsPayload(payload);
+const polymarketPayload = readOptionalJson(polymarketFile, { settledResults: [] });
+const results = buildSettledMatchResultsPayload(payload, polymarketPayload);
 console.log(`Prepared ${results.length} settled match result(s) from ${path.normalize(scheduleFile)}.`);
 
 if (isDryRun) {
@@ -64,29 +68,36 @@ function readJson(filePath) {
   return JSON.parse(content);
 }
 
-function buildSettledMatchResultsPayload(rawPayload) {
+function readOptionalJson(filePath, fallback) {
+  try {
+    return readJson(filePath);
+  } catch {
+    return fallback;
+  }
+}
+
+function buildSettledMatchResultsPayload(rawPayload, polymarketPayload) {
   const games = Array.isArray(rawPayload) ? rawPayload : rawPayload?.games || rawPayload?.data;
   if (!Array.isArray(games)) {
     throw new Error("Schedule payload must be an array or contain a games/data array.");
   }
+  const settledByMatchId = new Map(
+    (Array.isArray(polymarketPayload?.settledResults) ? polymarketPayload.settledResults : [])
+      .filter((result) => cleanText(result?.matchId))
+      .map((result) => [cleanText(result.matchId), result]),
+  );
 
   const byId = new Map();
   for (const game of games) {
-    const result = normalizeWorldCup26GameResult(game);
+    const result = normalizeWorldCup26GameResult(game, settledByMatchId);
     if (result) byId.set(result.match_id, result);
   }
   return [...byId.values()].sort((a, b) => new Date(a.match_kickoff_utc) - new Date(b.match_kickoff_utc));
 }
 
-function normalizeWorldCup26GameResult(game) {
+function normalizeWorldCup26GameResult(game, settledByMatchId) {
   if (!game || typeof game !== "object") return null;
   if (!isFinishedGame(game)) return null;
-
-  const homeScore = Number(game.home_score);
-  const awayScore = Number(game.away_score);
-  if (!Number.isInteger(homeScore) || !Number.isInteger(awayScore) || homeScore < 0 || awayScore < 0) {
-    return null;
-  }
 
   const homeTeam = cleanText(game.home_team_name_en || game.home_team_label || game.homeTeam || game.home);
   const awayTeam = cleanText(game.away_team_name_en || game.away_team_label || game.awayTeam || game.away);
@@ -95,6 +106,15 @@ function normalizeWorldCup26GameResult(game) {
   const kickoff = parseWorldCup26Date(game.local_date, game.stadium_id);
   const fallbackId = `${normalizeTeamKey(homeTeam)}-${normalizeTeamKey(awayTeam)}-${kickoff?.toISOString() || "unknown"}`;
   const matchId = `worldcup26-${cleanText(game.id) || fallbackId}`;
+  const settledMarketResult = settledByMatchId.get(matchId);
+  const marketHomeScore = readScore(settledMarketResult?.homeScore);
+  const marketAwayScore = readScore(settledMarketResult?.awayScore);
+  const hasMarketResult = marketHomeScore !== null && marketAwayScore !== null;
+  const sourceHomeScore = readScore(game.home_score);
+  const sourceAwayScore = readScore(game.away_score);
+  if (!hasMarketResult && (sourceHomeScore === null || sourceAwayScore === null)) return null;
+  const homeScore = hasMarketResult ? marketHomeScore : sourceHomeScore;
+  const awayScore = hasMarketResult ? marketAwayScore : sourceAwayScore;
 
   return {
     match_id: matchId,
@@ -105,13 +125,23 @@ function normalizeWorldCup26GameResult(game) {
     home_score: homeScore,
     away_score: awayScore,
     status: "finished",
-    source: "GitHub Actions schedule result sync",
+    source: hasMarketResult
+      ? "Polymarket 90-minute exact-score resolution"
+      : "GitHub Actions schedule result sync",
   };
+}
+
+function readScore(value) {
+  if (value === null || value === undefined || cleanText(value) === "") return null;
+  const score = Number(value);
+  return Number.isInteger(score) && score >= 0 ? score : null;
 }
 
 function isFinishedGame(game) {
   const finished = cleanText(game.finished).toLowerCase();
   if (finished === "true" || finished === "1" || finished === "yes") return true;
+  const stage = cleanText(game.type).toLowerCase();
+  if (stage && stage !== "group") return false;
   const elapsed = cleanText(game.time_elapsed).toLowerCase().replace(/\s+/g, "");
   return ["finished", "fulltime", "ft"].includes(elapsed);
 }
