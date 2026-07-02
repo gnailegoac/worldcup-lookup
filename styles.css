@@ -757,6 +757,122 @@ h1 {
   font-weight: 900;
 }
 
+.combo-prediction-panel {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.combo-subtitle {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.combo-status {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 850;
+}
+
+.combo-notice {
+  margin: 0;
+}
+
+.combo-form {
+  display: grid;
+  gap: 12px;
+}
+
+.combo-match-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.combo-match-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) minmax(180px, 0.8fr);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fbfcfd;
+}
+
+.combo-match-row:has(input:checked) {
+  border-color: rgba(15, 118, 110, 0.55);
+  background: #f0f9f7;
+}
+
+.combo-match-row input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+}
+
+.combo-match-info {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.combo-match-info strong,
+.combo-match-info span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.combo-match-info span {
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 750;
+}
+
+.combo-match-row select,
+.combo-controls input {
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0 8px;
+  background: #fff;
+}
+
+.combo-controls {
+  display: grid;
+  grid-template-columns: minmax(130px, 180px) minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+}
+
+.combo-controls label {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 800;
+}
+
+.combo-preview {
+  min-width: 0;
+  min-height: 36px;
+  align-content: center;
+  color: var(--accent);
+  font-size: 0.84rem;
+  font-weight: 900;
+  overflow-wrap: anywhere;
+}
+
 .awards-panel {
   display: grid;
   gap: 12px;
@@ -996,6 +1112,12 @@ h1 {
 
 .prediction-card-body {
   font-weight: 850;
+}
+
+.prediction-card.is-combo .prediction-card-body {
+  align-items: flex-start;
+  flex-direction: column;
+  line-height: 1.5;
 }
 
 .admin-panel {
@@ -1367,6 +1489,7 @@ h1 {
 
   .account-controls,
   .prediction-controls,
+  .combo-match-list,
   .award-grid,
   .featured-leaderboard .leaderboard-list,
   .predictions-area {
@@ -1425,6 +1548,18 @@ h1 {
 
   .award-form,
   .award-candidate {
+    grid-template-columns: 1fr;
+  }
+
+  .combo-match-row {
+    grid-template-columns: 22px minmax(0, 1fr);
+  }
+
+  .combo-match-row select {
+    grid-column: 2;
+  }
+
+  .combo-controls {
     grid-template-columns: 1fr;
   }
 

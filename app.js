@@ -24,6 +24,9 @@ const MIN_LIVE_SCHEDULE_MATCHES = 60;
 const LIVE_SCHEDULE_FORMAT_VERSION = "official-full-schedule-cache-fallback-awards-20260624";
 const AWARD_PROBABILITY_CANDIDATE_LIMIT = 8;
 const AWARD_PREDICTION_OPTION_LIMIT = 16;
+const COMBO_MIN_LEGS = 2;
+const COMBO_MAX_LEGS = 8;
+const COMBO_MATCH_OPTION_LIMIT = 16;
 const BEIJING_TIME_ZONE = "Asia/Shanghai";
 const BEIJING_OFFSET_MINUTES = 8 * 60;
 const AWARD_TYPES = ["golden_ball", "golden_boot", "golden_glove"];
@@ -656,6 +659,8 @@ const state = {
   authStatus: "未连接 Supabase",
   authNotice: "",
   predictionNotice: "",
+  comboPredictionNotice: "",
+  comboSchemaMissing: false,
   pointBalance: null,
   pointSchemaMissing: false,
   awardPredictionNotice: "",
@@ -701,6 +706,7 @@ const els = {
   registerButton: document.getElementById("registerButton"),
   signOutButton: document.getElementById("signOutButton"),
   refreshPredictionsButton: document.getElementById("refreshPredictionsButton"),
+  comboPredictionPanel: document.getElementById("comboPredictionPanel"),
   awardsPanel: document.getElementById("awardsPanel"),
   leaderboardList: document.getElementById("leaderboardList"),
   myPredictionsList: document.getElementById("myPredictionsList"),
@@ -816,6 +822,13 @@ function bindEvents() {
   });
 
   els.matchDetail.addEventListener("click", handleDetailAction);
+  if (els.comboPredictionPanel) {
+    els.comboPredictionPanel.addEventListener("change", handleComboPredictionChange);
+    els.comboPredictionPanel.addEventListener("input", updateComboPredictionPreview);
+    els.comboPredictionPanel.addEventListener("click", (event) => {
+      if (event.target.closest("[data-action='submit-combo-prediction']")) submitComboPrediction();
+    });
+  }
   if (els.awardsPanel) {
     els.awardsPanel.addEventListener("click", handleAwardAction);
   }
@@ -866,6 +879,7 @@ function render() {
   renderSummary();
   renderList();
   renderDetail(getSelectedMatch());
+  renderComboPredictionPanel();
   renderAwards();
   renderPredictionLists();
   renderAdminPanel();
@@ -1527,6 +1541,8 @@ function setAuthSession(session) {
   if (!state.authSession) {
     state.pointBalance = null;
     state.pointSchemaMissing = false;
+    state.comboPredictionNotice = "";
+    state.comboSchemaMissing = false;
   }
   if (state.authSession) scheduleAuthExpiry(state.authSession);
   return Boolean(state.authSession);
@@ -1562,6 +1578,7 @@ async function expireAuthSession(message = "登录已过期，请重新登录。
   state.authSession = null;
   state.pointBalance = null;
   state.pointSchemaMissing = false;
+  state.comboSchemaMissing = false;
   state.myPredictions = [];
   state.publicPredictions = [];
   state.myAwardPredictions = [];
@@ -1571,6 +1588,7 @@ async function expireAuthSession(message = "登录已过期，请重新登录。
   state.authStatus = state.supabase ? "Supabase 已连接" : state.authStatus;
   state.authNotice = message;
   state.predictionNotice = "";
+  state.comboPredictionNotice = "";
   render();
 }
 
@@ -1665,6 +1683,158 @@ async function submitPrediction(match) {
   const payout = Number(saved.payout_points) || payload.stake_points / Number(saved.model_probability || payload.model_probability);
   state.predictionNotice = `预测已保存，投入 ${formatPointAmount(payload.stake_points)}；命中返还 ${formatPointAmount(payout)}。`;
   await loadPredictions();
+}
+
+async function submitComboPrediction() {
+  if (!state.supabase || !state.authSession?.user) {
+    setComboPredictionNotice("请先登录后再提交组合预测。");
+    return;
+  }
+  if (isSessionExpired(state.authSession)) {
+    const refreshed = await refreshAuthSession();
+    if (!refreshed) return;
+  }
+
+  const form = els.comboPredictionPanel?.querySelector("[data-combo-form]");
+  if (!form) return;
+  const selections = readComboSelections(form);
+  if (selections.length < COMBO_MIN_LEGS || selections.length > COMBO_MAX_LEGS) {
+    setComboPredictionNotice(`请选择 ${COMBO_MIN_LEGS}-${COMBO_MAX_LEGS} 场比赛。`);
+    return;
+  }
+
+  const stakePoints = roundPointAmount(new FormData(form).get("comboStakePoints"));
+  if (!Number.isFinite(stakePoints) || stakePoints < 1) {
+    setComboPredictionNotice("本次投入点数至少为 1。");
+    return;
+  }
+  if (!Number.isFinite(state.pointBalance) || stakePoints > state.pointBalance) {
+    setComboPredictionNotice("可用点数不足，请减少本次投入或联系管理员分配点数。");
+    return;
+  }
+
+  const payload = {
+    display_name: getCurrentDisplayName(),
+    stake_points: stakePoints,
+    legs: selections.map((selection) => ({
+      match_id: selection.match.id,
+      outcome: selection.outcome,
+    })),
+  };
+  const submitButton = form.querySelector("[data-action='submit-combo-prediction']");
+  if (submitButton) submitButton.disabled = true;
+  setComboPredictionNotice("正在保存组合预测...");
+  await saveUserProfile(payload.display_name);
+
+  const result = await state.supabase.rpc("submit_combo_prediction", { combo_payload: payload });
+  if (isAuthExpiredError(result.error)) {
+    await expireAuthSession();
+    return;
+  }
+  if (result.error) {
+    state.comboSchemaMissing = isMissingComboPredictionSchemaError(result.error);
+    if (state.comboSchemaMissing) {
+      state.comboPredictionNotice = "请先重新运行 supabase/schema.sql，启用组合预测后再提交。";
+      renderComboPredictionPanel();
+      return;
+    }
+    setComboPredictionNotice(`组合预测提交失败：${formatPointError(result.error)}`);
+    updateComboPredictionPreview();
+    return;
+  }
+
+  const saved = result.data?.prediction || {};
+  const probability = Number(saved.model_probability);
+  state.pointBalance = Number(result.data?.balance ?? state.pointBalance);
+  state.pointSchemaMissing = false;
+  state.comboSchemaMissing = false;
+  state.comboPredictionNotice = `组合预测已保存，投入 ${formatPointAmount(stakePoints)}；全中返还 ${formatPointAmount(stakePoints / probability)}。`;
+  await loadPredictions();
+}
+
+function readComboSelections(form) {
+  if (!form) return [];
+  return [...form.querySelectorAll("[data-combo-row]")]
+    .filter((row) => row.querySelector("[data-combo-match]")?.checked)
+    .map((row) => ({
+      match: state.matches.find((match) => match.id === row.dataset.comboMatchId),
+      outcome: cleanText(row.querySelector("[data-combo-outcome]")?.value),
+    }))
+    .filter((selection) => selection.match && ["home", "draw", "away"].includes(selection.outcome));
+}
+
+function handleComboPredictionChange(event) {
+  const form = event.target.closest("[data-combo-form]");
+  if (!form) return;
+  let notice = "";
+  if (event.target.matches("[data-combo-match]")) {
+    const selectedCount = form.querySelectorAll("[data-combo-match]:checked").length;
+    if (selectedCount > COMBO_MAX_LEGS) {
+      event.target.checked = false;
+      notice = `最多选择 ${COMBO_MAX_LEGS} 场比赛。`;
+    }
+    const row = event.target.closest("[data-combo-row]");
+    const outcomeSelect = row?.querySelector("[data-combo-outcome]");
+    if (outcomeSelect) outcomeSelect.disabled = !event.target.checked;
+  }
+  setComboPredictionNotice(notice);
+  updateComboPredictionPreview();
+}
+
+function updateComboPredictionPreview() {
+  const form = els.comboPredictionPanel?.querySelector("[data-combo-form]");
+  const preview = form?.querySelector("[data-combo-preview]");
+  const submitButton = form?.querySelector("[data-action='submit-combo-prediction']");
+  if (!form || !preview || !submitButton) return;
+
+  const selections = readComboSelections(form);
+  const stakePoints = roundPointAmount(new FormData(form).get("comboStakePoints"));
+  const combinedProbability = selections.reduce((product, selection) => {
+    const probability = getOutcomeProbabilitySnapshot(selection.match, selection.outcome).model_probability;
+    return product * Number(probability || 0);
+  }, 1);
+  const baseDisabled = form.dataset.comboDisabled === "true";
+  const valid =
+    !baseDisabled &&
+    selections.length >= COMBO_MIN_LEGS &&
+    selections.length <= COMBO_MAX_LEGS &&
+    Number.isFinite(stakePoints) &&
+    stakePoints >= 1 &&
+    stakePoints <= Number(state.pointBalance) &&
+    combinedProbability > 0;
+
+  submitButton.disabled = !valid;
+  if (selections.length < COMBO_MIN_LEGS) {
+    preview.textContent = `已选择 ${selections.length} 场`;
+    return;
+  }
+  if (!Number.isFinite(stakePoints) || stakePoints < 1) {
+    preview.textContent = "本次投入点数至少为 1";
+    return;
+  }
+  if (stakePoints > Number(state.pointBalance)) {
+    preview.textContent = "可用点数不足";
+    return;
+  }
+  const multiplier = 1 / combinedProbability;
+  preview.textContent = `组合概率 ${formatPercent(combinedProbability)} · ${formatComboMultiplier(multiplier)} 倍 · 全中预计返还 ${formatPointAmount(stakePoints * multiplier)}`;
+}
+
+function setComboPredictionNotice(message) {
+  state.comboPredictionNotice = message;
+  const notice = els.comboPredictionPanel?.querySelector("[data-combo-notice]");
+  if (notice) {
+    notice.hidden = !message;
+    notice.textContent = message;
+  }
+}
+
+function formatComboMultiplier(value) {
+  const multiplier = Number(value);
+  if (!Number.isFinite(multiplier)) return "0";
+  if (multiplier >= 100) return multiplier.toFixed(0);
+  if (multiplier >= 10) return multiplier.toFixed(1);
+  return multiplier.toFixed(2);
 }
 
 async function submitAwardPrediction(awardType) {
@@ -1890,6 +2060,7 @@ async function loadPredictions() {
     state.awardSchemaMissing = false;
     state.pointBalance = null;
     state.pointSchemaMissing = false;
+    state.comboSchemaMissing = false;
     state.leaderboardRows = [];
     state.leaderboardNotice = "";
     resetAdminState();
@@ -2064,11 +2235,21 @@ function isMissingPointSchemaError(error) {
   );
 }
 
+function isMissingComboPredictionSchemaError(error) {
+  return /submit_combo_prediction|combo_legs|schema cache|function .* not found|could not find/i.test(
+    `${error?.message || ""} ${error?.details || ""} ${error?.hint || ""}`,
+  );
+}
+
 function formatPointError(error) {
   const message = cleanText(error?.message);
   if (/insufficient points/i.test(message)) return "可用点数不足。";
   if (/prediction market unavailable/i.test(message)) return "比赛概率尚未同步，请稍后再试。";
+  if (/combo match already started/i.test(message)) return "组合中有比赛已经开始，不能提交。";
   if (/match already started|can no longer be changed/i.test(message)) return "比赛已经开始，不能再提交或修改预测。";
+  if (/combo requires/i.test(message)) return `请选择 ${COMBO_MIN_LEGS}-${COMBO_MAX_LEGS} 场比赛。`;
+  if (/duplicate combo match/i.test(message)) return "同一场比赛不能在组合中重复选择。";
+  if (/invalid combo/i.test(message)) return "组合预测选项无效，请刷新页面后重试。";
   if (/stake must be at least/i.test(message)) return "本次投入点数至少为 1。";
   if (/invalid prediction/i.test(message)) return "预测选项无效，请刷新页面后重试。";
   return message || "未知错误";
@@ -3167,6 +3348,81 @@ function updatePredictionPayoutPreview(match, form) {
     : "";
 }
 
+function renderComboPredictionPanel() {
+  if (!els.comboPredictionPanel) return;
+  const user = state.authSession?.user;
+  const matches = state.matches
+    .filter(isMatchPredictable)
+    .sort(sortAscending)
+    .slice(0, COMBO_MATCH_OPTION_LIMIT);
+  const balance = Number(state.pointBalance || 0);
+  const enabled = Boolean(state.supabase && user && !state.pointSchemaMissing && !state.comboSchemaMissing && balance >= 1 && matches.length >= COMBO_MIN_LEGS);
+  const disabledAttr = enabled ? "" : "disabled";
+  const status = !state.supabase
+    ? "未连接 Supabase"
+    : !user
+      ? "登录后可提交"
+      : state.comboSchemaMissing
+        ? "组合预测待启用"
+        : state.pointSchemaMissing
+          ? "组合预测待启用"
+          : balance < 1
+            ? "点数不足，请联系管理员"
+            : matches.length < COMBO_MIN_LEGS
+              ? "暂无足够的未开赛比赛"
+              : `可用 ${formatPointAmount(balance)}`;
+  const defaultStake = Math.max(1, Math.min(10, balance));
+
+  els.comboPredictionPanel.innerHTML = `
+    <div class="prediction-list-head">
+      <div>
+        <h2 class="section-title">组合预测</h2>
+        <span class="combo-subtitle">胜平负 · ${COMBO_MIN_LEGS}-${COMBO_MAX_LEGS} 场</span>
+      </div>
+      <span class="combo-status">${escapeHtml(status)}</span>
+    </div>
+    <div class="prediction-notice combo-notice" data-combo-notice ${state.comboPredictionNotice ? "" : "hidden"}>${escapeHtml(state.comboPredictionNotice)}</div>
+    ${matches.length >= COMBO_MIN_LEGS ? `
+      <form class="combo-form" data-combo-form data-combo-disabled="${enabled ? "false" : "true"}">
+        <div class="combo-match-list">
+          ${matches.map((match) => renderComboMatchRow(match, disabledAttr)).join("")}
+        </div>
+        <div class="combo-controls">
+          <label>
+            本次投入
+            <input name="comboStakePoints" type="number" min="1" max="${balance}" step="0.01" value="${defaultStake}" ${disabledAttr} />
+          </label>
+          <div class="combo-preview" data-combo-preview>已选择 0 场</div>
+          <button type="button" class="action-button primary" data-action="submit-combo-prediction" disabled>提交组合</button>
+        </div>
+      </form>
+    ` : `<div class="empty-list compact-empty">暂无可组合的未开赛比赛</div>`}
+  `;
+}
+
+function renderComboMatchRow(match, disabledAttr) {
+  const probability = computeProbability(match);
+  return `
+    <div class="combo-match-row" data-combo-row data-combo-match-id="${escapeHtml(match.id)}">
+      <input
+        type="checkbox"
+        data-combo-match
+        aria-label="选择 ${escapeHtml(match.home)} 对 ${escapeHtml(match.away)}"
+        ${disabledAttr}
+      />
+      <div class="combo-match-info">
+        <strong>${escapeHtml(match.home)} vs ${escapeHtml(match.away)}</strong>
+        <span>${escapeHtml(formatDate(match.kickoffUtc))}</span>
+      </div>
+      <select data-combo-outcome aria-label="${escapeHtml(match.home)} 对 ${escapeHtml(match.away)}的预测" disabled>
+        <option value="home">${escapeHtml(match.home)} 胜 · ${escapeHtml(formatPercent(probability.homeWin))}</option>
+        <option value="draw">平局 · ${escapeHtml(formatPercent(probability.draw))}</option>
+        <option value="away">${escapeHtml(match.away)} 胜 · ${escapeHtml(formatPercent(probability.awayWin))}</option>
+      </select>
+    </div>
+  `;
+}
+
 function renderInput(label, name, value, type = "text", className = "", step = "", min = "") {
   return `
     <label class="edit-field ${className}">
@@ -3709,7 +3965,7 @@ function renderPredictionCard(prediction, showOwner) {
   const ownerName = getPredictionDisplayName(prediction);
   const predictionMeta = formatPredictionMeta(prediction);
   return `
-    <article class="prediction-card">
+    <article class="prediction-card ${isComboPrediction(prediction) ? "is-combo" : ""}">
       <div class="prediction-card-head">
         <strong>${escapeHtml(prediction.match_label)}</strong>
         <span>${escapeHtml(formatDate(prediction.match_kickoff_utc))}</span>
@@ -3727,6 +3983,13 @@ function renderPredictionCard(prediction, showOwner) {
 }
 
 function formatPrediction(prediction) {
+  if (isComboPrediction(prediction)) {
+    const legs = normalizeComboLegs(prediction.combo_legs);
+    if (legs.length) {
+      return `组合：${legs.map(formatComboLeg).join("；")}`;
+    }
+    return `组合：${cleanText(prediction.model_probability_label) || "多场胜平负"}`;
+  }
   if (isScorePrediction(prediction)) {
     const homeScore = Number(prediction.home_score);
     const awayScore = Number(prediction.away_score);
@@ -3737,6 +4000,35 @@ function formatPrediction(prediction) {
   if (prediction.outcome === "home") return `${prediction.home_team} 胜`;
   if (prediction.outcome === "away") return `${prediction.away_team} 胜`;
   return "平局";
+}
+
+function isComboPrediction(prediction) {
+  return cleanText(prediction?.prediction_type).toLocaleLowerCase() === "combo";
+}
+
+function normalizeComboLegs(value) {
+  let legs = value;
+  if (typeof legs === "string") {
+    try {
+      legs = JSON.parse(legs);
+    } catch {
+      return [];
+    }
+  }
+  return Array.isArray(legs) ? legs.filter((leg) => leg && typeof leg === "object") : [];
+}
+
+function formatComboLeg(leg) {
+  const matchLabel = cleanText(leg.match_label) || `${cleanText(leg.home_team)} vs ${cleanText(leg.away_team)}`;
+  const selectionLabel = cleanText(leg.selection_label) || (
+    leg.outcome === "home"
+      ? `${cleanText(leg.home_team)} 胜`
+      : leg.outcome === "away"
+        ? `${cleanText(leg.away_team)} 胜`
+        : "平局"
+  );
+  const probability = normalizeStoredProbability(leg.probability);
+  return `${matchLabel}：${selectionLabel}${probability === null ? "" : `（${formatPercent(probability)}）`}`;
 }
 
 function isScorePrediction(prediction) {

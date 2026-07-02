@@ -163,6 +163,16 @@ check("team style profile changes the goal environment", () => {
   assert(conservativeTotal < 2.35, `conservative total should be suppressed, got ${conservativeTotal}`);
 });
 
+check("combo prediction multiplies leg returns", () => {
+  const probabilities = [0.5, 0.25, 0.4];
+  const stake = 10;
+  const combinedProbability = probabilities.reduce((product, probability) => product * probability, 1);
+  const combinedMultiplier = probabilities.reduce((product, probability) => product * (1 / probability), 1);
+  close(combinedProbability, 0.05, 1e-12);
+  close(stake / combinedProbability, stake * combinedMultiplier, 1e-12);
+  close(stake / combinedProbability, 200, 1e-12);
+});
+
 for (const checkItem of checks) {
   checkItem.run();
   console.log(`ok - ${checkItem.name}`);

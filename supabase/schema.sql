@@ -9,10 +9,11 @@ create table if not exists public.predictions (
   home_team text not null,
   away_team text not null,
   display_name text,
-  prediction_type text not null check (prediction_type in ('outcome', 'score')),
+  prediction_type text not null check (prediction_type in ('outcome', 'score', 'combo')),
   outcome text check (outcome in ('home', 'draw', 'away')),
   home_score integer check (home_score >= 0),
   away_score integer check (away_score >= 0),
+  combo_legs jsonb,
   model_probability numeric,
   model_probability_label text,
   model_snapshot_at timestamptz,
@@ -30,10 +31,22 @@ create table if not exists public.predictions (
     stake_points is null or stake_points >= 1
   ),
   constraint predictions_payout_points_check check (payout_points >= 0),
+  constraint predictions_combo_legs_check check (
+    combo_legs is null or jsonb_typeof(combo_legs) = 'array'
+  ),
   constraint predictions_score_shape check (
-    (prediction_type = 'outcome' and outcome is not null and home_score is null and away_score is null)
+    (prediction_type = 'outcome' and outcome is not null and home_score is null and away_score is null and combo_legs is null)
     or
-    (prediction_type = 'score' and outcome is null and home_score is not null and away_score is not null)
+    (prediction_type = 'score' and outcome is null and home_score is not null and away_score is not null and combo_legs is null)
+    or
+    (
+      prediction_type = 'combo'
+      and outcome is null
+      and home_score is null
+      and away_score is null
+      and jsonb_typeof(combo_legs) = 'array'
+      and jsonb_array_length(combo_legs) between 2 and 8
+    )
   ),
   constraint predictions_one_per_user_match unique (user_id, match_id)
 );
@@ -49,6 +62,9 @@ alter table public.predictions
 
 alter table public.predictions
   add column if not exists model_snapshot_at timestamptz;
+
+alter table public.predictions
+  add column if not exists combo_legs jsonb;
 
 alter table public.predictions
   add column if not exists stake_points numeric;
@@ -82,6 +98,40 @@ alter table public.predictions
 alter table public.predictions
   add constraint predictions_payout_points_check
   check (payout_points >= 0);
+
+alter table public.predictions
+  drop constraint if exists predictions_prediction_type_check;
+
+alter table public.predictions
+  add constraint predictions_prediction_type_check
+  check (prediction_type in ('outcome', 'score', 'combo'));
+
+alter table public.predictions
+  drop constraint if exists predictions_combo_legs_check;
+
+alter table public.predictions
+  add constraint predictions_combo_legs_check
+  check (combo_legs is null or jsonb_typeof(combo_legs) = 'array');
+
+alter table public.predictions
+  drop constraint if exists predictions_score_shape;
+
+alter table public.predictions
+  add constraint predictions_score_shape
+  check (
+    (prediction_type = 'outcome' and outcome is not null and home_score is null and away_score is null and combo_legs is null)
+    or
+    (prediction_type = 'score' and outcome is null and home_score is not null and away_score is not null and combo_legs is null)
+    or
+    (
+      prediction_type = 'combo'
+      and outcome is null
+      and home_score is null
+      and away_score is null
+      and jsonb_typeof(combo_legs) = 'array'
+      and jsonb_array_length(combo_legs) between 2 and 8
+    )
+  );
 
 alter table public.predictions
   drop constraint if exists predictions_public_only_check;
@@ -910,6 +960,7 @@ begin
       outcome = outcome_value,
       home_score = home_score_value,
       away_score = away_score_value,
+      combo_legs = null,
       model_probability = probability_value,
       model_probability_label = probability_label,
       model_snapshot_at = market_row.snapshot_at,
@@ -991,6 +1042,221 @@ $$;
 revoke all on function public.submit_prediction(jsonb) from public;
 grant execute on function public.submit_prediction(jsonb) to authenticated;
 
+create or replace function public.submit_combo_prediction(combo_payload jsonb)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  current_user_id uuid := auth.uid();
+  market_row public.prediction_markets%rowtype;
+  saved_prediction public.predictions%rowtype;
+  legs_value jsonb;
+  leg_input jsonb;
+  canonical_legs jsonb := '[]'::jsonb;
+  seen_match_ids text[] := array[]::text[];
+  selection_labels text[] := array[]::text[];
+  match_id_value text;
+  outcome_value text;
+  selection_label text;
+  stake_value numeric;
+  leg_probability numeric;
+  combined_probability numeric := 1;
+  current_balance numeric;
+  earliest_kickoff timestamptz;
+  latest_snapshot timestamptz;
+  display_name_value text;
+  leg_count integer;
+begin
+  if current_user_id is null then
+    raise exception 'not authorized' using errcode = '42501';
+  end if;
+
+  if combo_payload is null or jsonb_typeof(combo_payload) <> 'object' then
+    raise exception 'invalid combo payload' using errcode = '22023';
+  end if;
+
+  legs_value := combo_payload -> 'legs';
+  if legs_value is null or jsonb_typeof(legs_value) <> 'array' then
+    raise exception 'combo requires 2 to 8 matches' using errcode = '22023';
+  end if;
+
+  leg_count := jsonb_array_length(legs_value);
+  if leg_count < 2 or leg_count > 8 then
+    raise exception 'combo requires 2 to 8 matches' using errcode = '22023';
+  end if;
+
+  stake_value := round((combo_payload ->> 'stake_points')::numeric, 2);
+  if stake_value is null or stake_value < 1 or stake_value > 1000000 then
+    raise exception 'stake must be at least 1 point' using errcode = '22023';
+  end if;
+
+  for leg_input in
+    select value from jsonb_array_elements(legs_value)
+  loop
+    match_id_value := trim(coalesce(leg_input ->> 'match_id', ''));
+    outcome_value := trim(coalesce(leg_input ->> 'outcome', ''));
+
+    if match_id_value = '' or outcome_value not in ('home', 'draw', 'away') then
+      raise exception 'invalid combo choice' using errcode = '22023';
+    end if;
+    if match_id_value = any(seen_match_ids) then
+      raise exception 'duplicate combo match' using errcode = '22023';
+    end if;
+
+    select markets.* into market_row
+    from public.prediction_markets markets
+    where markets.match_id = match_id_value;
+
+    if not found then
+      raise exception 'prediction market unavailable' using errcode = '22023';
+    end if;
+    if market_row.match_kickoff_utc <= now()
+      or exists (
+        select 1 from public.match_results results
+        where results.match_id = market_row.match_id
+          and results.status = 'finished'
+      ) then
+      raise exception 'combo match already started' using errcode = '22023';
+    end if;
+
+    leg_probability := public.resolve_prediction_probability(
+      market_row,
+      'outcome',
+      outcome_value,
+      null,
+      null
+    );
+    if leg_probability is null or leg_probability <= 0 or leg_probability > 1 then
+      raise exception 'invalid combo choice' using errcode = '22023';
+    end if;
+
+    selection_label := case outcome_value
+      when 'home' then market_row.home_team || ' 胜'
+      when 'draw' then '平局'
+      when 'away' then market_row.away_team || ' 胜'
+    end;
+    combined_probability := combined_probability * leg_probability;
+    seen_match_ids := array_append(seen_match_ids, match_id_value);
+    selection_labels := array_append(selection_labels, selection_label);
+    earliest_kickoff := case
+      when earliest_kickoff is null then market_row.match_kickoff_utc
+      else least(earliest_kickoff, market_row.match_kickoff_utc)
+    end;
+    latest_snapshot := case
+      when latest_snapshot is null then market_row.snapshot_at
+      else greatest(latest_snapshot, market_row.snapshot_at)
+    end;
+    canonical_legs := canonical_legs || jsonb_build_array(jsonb_build_object(
+      'match_id', market_row.match_id,
+      'match_label', market_row.match_label,
+      'kickoff_utc', market_row.match_kickoff_utc,
+      'home_team', market_row.home_team,
+      'away_team', market_row.away_team,
+      'outcome', outcome_value,
+      'selection_label', selection_label,
+      'probability', leg_probability
+    ));
+  end loop;
+
+  if combined_probability <= 0 or combined_probability > 1 then
+    raise exception 'invalid combo probability' using errcode = '22023';
+  end if;
+
+  select coalesce(
+    nullif(profiles.username, ''),
+    nullif(trim(combo_payload ->> 'display_name'), ''),
+    '用户 ' || left(current_user_id::text, 8)
+  )
+  into display_name_value
+  from (select 1) seed
+  left join public.user_profiles profiles on profiles.user_id = current_user_id;
+
+  insert into public.point_accounts (user_id, balance)
+  values (current_user_id, 0)
+  on conflict (user_id) do nothing;
+
+  select accounts.balance into current_balance
+  from public.point_accounts accounts
+  where accounts.user_id = current_user_id
+  for update;
+
+  if current_balance < stake_value then
+    raise exception 'insufficient points' using errcode = '22023';
+  end if;
+
+  insert into public.predictions (
+    user_id,
+    match_id,
+    match_kickoff_utc,
+    match_label,
+    home_team,
+    away_team,
+    display_name,
+    prediction_type,
+    outcome,
+    home_score,
+    away_score,
+    combo_legs,
+    model_probability,
+    model_probability_label,
+    model_snapshot_at,
+    stake_points,
+    payout_points,
+    is_public
+  )
+  values (
+    current_user_id,
+    'combo-' || gen_random_uuid()::text,
+    earliest_kickoff,
+    leg_count::text || '场组合预测',
+    '组合预测',
+    '胜平负',
+    display_name_value,
+    'combo',
+    null,
+    null,
+    null,
+    canonical_legs,
+    combined_probability,
+    array_to_string(selection_labels, ' × '),
+    coalesce(latest_snapshot, now()),
+    stake_value,
+    0,
+    true
+  )
+  returning * into saved_prediction;
+
+  current_balance := current_balance - stake_value;
+  update public.point_accounts
+  set balance = current_balance
+  where user_id = current_user_id;
+
+  perform public.record_point_transaction(
+    current_user_id,
+    saved_prediction.id,
+    'prediction_stake',
+    -stake_value,
+    current_balance,
+    '提交组合预测',
+    jsonb_build_object(
+      'match_id', saved_prediction.match_id,
+      'leg_count', leg_count,
+      'probability', combined_probability
+    )
+  );
+
+  return jsonb_build_object(
+    'balance', current_balance,
+    'prediction', to_jsonb(saved_prediction)
+  );
+end;
+$$;
+
+revoke all on function public.submit_combo_prediction(jsonb) from public;
+grant execute on function public.submit_combo_prediction(jsonb) to authenticated;
+
 create or replace function public.reconcile_prediction_points()
 returns integer
 language plpgsql
@@ -1010,48 +1276,84 @@ begin
   end if;
 
   for assessed in
-    select
-      predictions.*,
-      results.home_score as result_home_score,
-      results.away_score as result_away_score
-    from public.predictions predictions
-    join lateral (
-      select match_results.*
-      from public.match_results match_results
-      where match_results.status = 'finished'
-        and (
-          match_results.match_id = predictions.match_id
-          or (
-            match_results.match_kickoff_utc is not null
-            and predictions.match_kickoff_utc is not null
-            and abs(extract(epoch from (match_results.match_kickoff_utc - predictions.match_kickoff_utc))) <= 18 * 60 * 60
-            and lower(regexp_replace(coalesce(match_results.home_team, ''), '\s+', '', 'g')) =
-              lower(regexp_replace(coalesce(predictions.home_team, ''), '\s+', '', 'g'))
-            and lower(regexp_replace(coalesce(match_results.away_team, ''), '\s+', '', 'g')) =
-              lower(regexp_replace(coalesce(predictions.away_team, ''), '\s+', '', 'g'))
+    with single_assessed as (
+      select
+        predictions.id as prediction_id,
+        case
+          when predictions.prediction_type = 'score' then
+            predictions.home_score = results.home_score
+            and predictions.away_score = results.away_score
+          when predictions.prediction_type = 'outcome' then
+            predictions.outcome = case
+              when results.home_score > results.away_score then 'home'
+              when results.home_score < results.away_score then 'away'
+              else 'draw'
+            end
+          else false
+        end as correct_value,
+        results.home_score::text || '-' || results.away_score::text as result_label
+      from public.predictions predictions
+      join lateral (
+        select match_results.*
+        from public.match_results match_results
+        where match_results.status = 'finished'
+          and (
+            match_results.match_id = predictions.match_id
+            or (
+              match_results.match_kickoff_utc is not null
+              and predictions.match_kickoff_utc is not null
+              and abs(extract(epoch from (match_results.match_kickoff_utc - predictions.match_kickoff_utc))) <= 18 * 60 * 60
+              and lower(regexp_replace(coalesce(match_results.home_team, ''), '\s+', '', 'g')) =
+                lower(regexp_replace(coalesce(predictions.home_team, ''), '\s+', '', 'g'))
+              and lower(regexp_replace(coalesce(match_results.away_team, ''), '\s+', '', 'g')) =
+                lower(regexp_replace(coalesce(predictions.away_team, ''), '\s+', '', 'g'))
+            )
           )
-        )
-      order by
-        case when match_results.match_id = predictions.match_id then 0 else 1 end,
-        abs(extract(epoch from (match_results.match_kickoff_utc - predictions.match_kickoff_utc))) nulls last
-      limit 1
-    ) results on true
+        order by
+          case when match_results.match_id = predictions.match_id then 0 else 1 end,
+          abs(extract(epoch from (match_results.match_kickoff_utc - predictions.match_kickoff_utc))) nulls last
+        limit 1
+      ) results on true
+      where predictions.prediction_type in ('outcome', 'score')
+    ),
+    combo_assessed as (
+      select
+        predictions.id as prediction_id,
+        coalesce(bool_and(
+          (legs.leg ->> 'outcome') = case
+            when results.home_score > results.away_score then 'home'
+            when results.home_score < results.away_score then 'away'
+            else 'draw'
+          end
+        ), false) as correct_value,
+        string_agg(
+          results.home_score::text || '-' || results.away_score::text,
+          ', ' order by legs.leg_order
+        ) as result_label
+      from public.predictions predictions
+      cross join lateral jsonb_array_elements(predictions.combo_legs)
+        with ordinality as legs(leg, leg_order)
+      left join public.match_results results
+        on results.match_id = legs.leg ->> 'match_id'
+        and results.status = 'finished'
+      where predictions.prediction_type = 'combo'
+      group by predictions.id
+      having count(*) between 2 and 8
+        and count(results.match_id) = count(*)
+    ),
+    all_assessed as (
+      select * from single_assessed
+      union all
+      select * from combo_assessed
+    )
+    select predictions.*, all_assessed.correct_value, all_assessed.result_label
+    from public.predictions predictions
+    join all_assessed on all_assessed.prediction_id = predictions.id
     where predictions.stake_points is not null
       and predictions.model_probability is not null
       and predictions.model_probability > 0
   loop
-    correct_value := case
-      when assessed.prediction_type = 'score' then
-        assessed.home_score = assessed.result_home_score
-        and assessed.away_score = assessed.result_away_score
-      when assessed.prediction_type = 'outcome' then
-        assessed.outcome = case
-          when assessed.result_home_score > assessed.result_away_score then 'home'
-          when assessed.result_home_score < assessed.result_away_score then 'away'
-          else 'draw'
-        end
-      else false
-    end;
+    correct_value := assessed.correct_value;
 
     desired_payout := case
       when correct_value then round(assessed.stake_points / assessed.model_probability, 4)
@@ -1088,7 +1390,7 @@ begin
             'match_id', assessed.match_id,
             'correct', correct_value,
             'payout', desired_payout,
-            'result', assessed.result_home_score::text || '-' || assessed.result_away_score::text
+            'result', assessed.result_label
           )
         );
       end if;
@@ -1420,6 +1722,7 @@ returns table (
   outcome text,
   home_score integer,
   away_score integer,
+  combo_legs jsonb,
   model_probability numeric,
   model_probability_label text,
   model_snapshot_at timestamptz,
@@ -1454,6 +1757,7 @@ begin
     predictions.outcome,
     predictions.home_score,
     predictions.away_score,
+    predictions.combo_legs,
     predictions.model_probability,
     predictions.model_probability_label,
     predictions.model_snapshot_at,
