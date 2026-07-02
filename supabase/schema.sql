@@ -664,11 +664,13 @@ as $$
     from public.predictions predictions
     where predictions.user_id = target_user_id
   ),
-  return_stats as (
-    select coalesce(sum(transactions.amount), 0) as cumulative_return_points
-    from public.point_transactions transactions
-    where transactions.user_id = target_user_id
-      and transactions.kind = 'prediction_settlement'
+  multiplier_stats as (
+    select coalesce(
+      sum(1 / nullif(predictions.model_probability, 0)) filter (where predictions.is_correct is true),
+      0
+    ) as cumulative_return_multiplier
+    from public.predictions predictions
+    where predictions.user_id = target_user_id
   ),
   settled_sequence as (
     select
@@ -696,16 +698,16 @@ as $$
     case when stats.has_exact_score_hit then 'score_oracle' end,
     case when stats.has_combo_hit then 'combo_master' end,
     case when stats.has_underdog_hit then 'underdog_hunter' end,
-    case when returns.cumulative_return_points >= 100 then 'century_return' end,
+    case when multipliers.cumulative_return_multiplier >= 20 then 'century_return' end,
     case when stats.settled_predictions >= 5
-      and stats.correct_predictions::numeric / nullif(stats.settled_predictions, 0) >= 0.6
+      and stats.correct_predictions::numeric / nullif(stats.settled_predictions, 0) >= 0.4
       then 'precision_player' end,
     case when stats.has_outcome_prediction and stats.has_score_prediction and stats.has_combo_prediction
       then 'all_rounder' end,
     case when streaks.longest_streak >= 3 then 'hot_streak' end
   ]::text[], null)
   from prediction_stats stats
-  cross join return_stats returns
+  cross join multiplier_stats multipliers
   cross join streak_stats streaks;
 $$;
 

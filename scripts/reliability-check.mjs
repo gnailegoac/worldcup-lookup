@@ -123,6 +123,8 @@ assert.match(schema, /select predictions\.\* into locked_prediction[\s\S]*?where
 assert.match(schema, /desired_payout - coalesce\(locked_prediction\.payout_points, 0\)/);
 assert.match(schema, /order by predictions\.match_kickoff_utc, predictions\.created_at, predictions\.id/);
 assert.match(schema, /left join lateral \([\s\S]*?unique_result[\s\S]*?\) results on true/);
+assert.match(schema, /cumulative_return_multiplier >= 20 then 'century_return'/);
+assert.match(schema, /correct_predictions::numeric \/ nullif\(stats\.settled_predictions, 0\) >= 0\.4/);
 assert.match(schema, /create table if not exists public\.champion_picks/);
 assert.match(schema, /create or replace function public\.select_champion_pick\(team_code_value text\)/);
 assert.equal((schema.match(/raise exception 'champion pick required'/g) || []).length, 2);

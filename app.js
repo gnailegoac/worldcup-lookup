@@ -185,8 +185,8 @@ const ACHIEVEMENT_DEFINITIONS = [
   { id: "score_oracle", name: "比分先知", mark: "2:1", description: "命中 1 次具体比分" },
   { id: "combo_master", name: "组合大师", mark: "×", description: "命中 1 次组合预测" },
   { id: "underdog_hunter", name: "冷门猎手", mark: "25", description: "命中概率不高于 25% 的单场胜负平" },
-  { id: "century_return", name: "百点回响", mark: "100", description: "累计返还达到 100 点" },
-  { id: "precision_player", name: "稳定输出", mark: "60", description: "至少结算 5 次且命中率达到 60%" },
+  { id: "century_return", name: "二十倍回响", mark: "20×", description: "命中预测的返还倍数累计达到 20 倍" },
+  { id: "precision_player", name: "稳定输出", mark: "40", description: "至少结算 5 次且命中率达到 40%" },
   { id: "all_rounder", name: "全能玩家", mark: "3型", description: "提交过胜平负、比分和组合预测" },
   { id: "hot_streak", name: "三连红", mark: "W3", description: "连续命中 3 次已结算预测" },
 ];
