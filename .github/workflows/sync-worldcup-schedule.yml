@@ -1,6 +1,13 @@
 name: Sync World Cup Schedule Cache
 
 on:
+  push:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/sync-worldcup-schedule.yml"
+      - "scripts/sync-match-results.mjs"
+      - "scripts/sync-polymarket-odds.mjs"
+      - "scripts/sync-prediction-markets.mjs"
   schedule:
     - cron: "*/5 * * * *"
   workflow_dispatch:
