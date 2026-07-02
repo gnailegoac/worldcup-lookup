@@ -218,6 +218,12 @@ h1 {
   font-size: 0.9rem;
 }
 
+.account-point-balance {
+  color: var(--accent);
+  font-size: 0.9rem;
+  font-weight: 950;
+}
+
 .account-controls {
   display: grid;
   grid-template-columns: minmax(150px, 0.8fr) minmax(150px, 0.8fr) auto auto auto;
@@ -744,6 +750,13 @@ h1 {
   max-width: 100%;
 }
 
+.prediction-payout-preview {
+  min-height: 20px;
+  color: var(--accent);
+  font-size: 0.82rem;
+  font-weight: 900;
+}
+
 .awards-panel {
   display: grid;
   gap: 12px;
@@ -1075,6 +1088,7 @@ h1 {
 
 .admin-user-summary {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
@@ -1106,6 +1120,30 @@ h1 {
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
+}
+
+.admin-user-summary .admin-point-controls {
+  display: grid;
+  grid-template-columns: minmax(108px, 1fr) auto auto;
+  align-items: end;
+  gap: 6px;
+}
+
+.admin-point-controls label {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 800;
+}
+
+.admin-point-controls input {
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0 8px;
 }
 
 .compact-empty {
@@ -1409,6 +1447,10 @@ h1 {
   .admin-user-summary {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .admin-user-summary .admin-point-controls {
+    width: 100%;
   }
 
   .editor-head {

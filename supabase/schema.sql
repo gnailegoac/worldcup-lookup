@@ -16,12 +16,20 @@ create table if not exists public.predictions (
   model_probability numeric,
   model_probability_label text,
   model_snapshot_at timestamptz,
+  stake_points numeric,
+  payout_points numeric not null default 0,
+  is_correct boolean,
+  settled_at timestamptz,
   is_public boolean not null default true,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint predictions_model_probability_check check (
     model_probability is null or (model_probability >= 0 and model_probability <= 1)
   ),
+  constraint predictions_stake_points_check check (
+    stake_points is null or stake_points >= 1
+  ),
+  constraint predictions_payout_points_check check (payout_points >= 0),
   constraint predictions_score_shape check (
     (prediction_type = 'outcome' and outcome is not null and home_score is null and away_score is null)
     or
@@ -43,11 +51,37 @@ alter table public.predictions
   add column if not exists model_snapshot_at timestamptz;
 
 alter table public.predictions
+  add column if not exists stake_points numeric;
+
+alter table public.predictions
+  add column if not exists payout_points numeric not null default 0;
+
+alter table public.predictions
+  add column if not exists is_correct boolean;
+
+alter table public.predictions
+  add column if not exists settled_at timestamptz;
+
+alter table public.predictions
   drop constraint if exists predictions_model_probability_check;
 
 alter table public.predictions
   add constraint predictions_model_probability_check
   check (model_probability is null or (model_probability >= 0 and model_probability <= 1));
+
+alter table public.predictions
+  drop constraint if exists predictions_stake_points_check;
+
+alter table public.predictions
+  add constraint predictions_stake_points_check
+  check (stake_points is null or stake_points >= 1);
+
+alter table public.predictions
+  drop constraint if exists predictions_payout_points_check;
+
+alter table public.predictions
+  add constraint predictions_payout_points_check
+  check (payout_points >= 0);
 
 alter table public.predictions
   drop constraint if exists predictions_public_only_check;
@@ -79,26 +113,8 @@ create policy "Users can read own predictions and public predictions"
   using (is_public = true or auth.uid() = user_id);
 
 drop policy if exists "Users can insert own predictions" on public.predictions;
-create policy "Users can insert own predictions"
-  on public.predictions
-  for insert
-  to authenticated
-  with check (auth.uid() = user_id and is_public = true);
-
 drop policy if exists "Users can update own predictions" on public.predictions;
-create policy "Users can update own predictions"
-  on public.predictions
-  for update
-  to authenticated
-  using (auth.uid() = user_id)
-  with check (auth.uid() = user_id and is_public = true);
-
 drop policy if exists "Users can delete own predictions" on public.predictions;
-create policy "Users can delete own predictions"
-  on public.predictions
-  for delete
-  to authenticated
-  using (auth.uid() = user_id);
 
 create or replace function public.set_updated_at()
 returns trigger
@@ -295,8 +311,7 @@ insert into public.user_profiles (user_id, username)
 select users.id, seed_profiles.username
 from (
   values
-    ('00f003bb-b3e1-4e4f-a1a7-8d767e534604'::uuid, 'wc-admin-7kq4'),
-    ('d06f7d2e-e954-4a57-b2c3-d2464ac2b071'::uuid, '艹公公')
+    ('00f003bb-b3e1-4e4f-a1a7-8d767e534604'::uuid, 'wc-admin-7kq4')
 ) as seed_profiles(user_id, username)
 join auth.users users on users.id = seed_profiles.user_id
 on conflict (user_id) do update
@@ -343,6 +358,822 @@ $$;
 
 revoke all on function public.can_manage_match_results() from public;
 grant execute on function public.can_manage_match_results() to authenticated, service_role;
+
+create table if not exists public.prediction_markets (
+  match_id text primary key,
+  match_label text not null,
+  match_kickoff_utc timestamptz not null,
+  home_team text not null,
+  away_team text not null,
+  lambda_home numeric not null check (lambda_home > 0),
+  lambda_away numeric not null check (lambda_away > 0),
+  home_win_probability numeric not null check (home_win_probability > 0 and home_win_probability <= 1),
+  draw_probability numeric not null check (draw_probability > 0 and draw_probability <= 1),
+  away_win_probability numeric not null check (away_win_probability > 0 and away_win_probability <= 1),
+  exact_scores jsonb not null default '[]'::jsonb check (jsonb_typeof(exact_scores) = 'array'),
+  exact_other_probability numeric check (
+    exact_other_probability is null or (exact_other_probability >= 0 and exact_other_probability <= 1)
+  ),
+  source text,
+  snapshot_at timestamptz not null default now(),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists prediction_markets_kickoff_idx
+  on public.prediction_markets (match_kickoff_utc);
+
+alter table public.prediction_markets enable row level security;
+
+drop policy if exists "Authenticated users can read prediction markets" on public.prediction_markets;
+create policy "Authenticated users can read prediction markets"
+  on public.prediction_markets
+  for select
+  to authenticated
+  using (true);
+
+drop trigger if exists prediction_markets_set_updated_at on public.prediction_markets;
+create trigger prediction_markets_set_updated_at
+  before update on public.prediction_markets
+  for each row
+  execute function public.set_updated_at();
+
+create table if not exists public.point_accounts (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  balance numeric not null default 0,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+alter table public.point_accounts enable row level security;
+
+drop policy if exists "Users can read own point account" on public.point_accounts;
+create policy "Users can read own point account"
+  on public.point_accounts
+  for select
+  to authenticated
+  using (auth.uid() = user_id);
+
+drop trigger if exists point_accounts_set_updated_at on public.point_accounts;
+create trigger point_accounts_set_updated_at
+  before update on public.point_accounts
+  for each row
+  execute function public.set_updated_at();
+
+create table if not exists public.point_transactions (
+  id bigint generated by default as identity primary key,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  prediction_id uuid references public.predictions(id) on delete set null,
+  kind text not null check (
+    kind in ('admin_adjustment', 'prediction_stake', 'prediction_refund', 'prediction_settlement', 'admin_refund')
+  ),
+  amount numeric not null check (amount <> 0),
+  balance_after numeric not null,
+  note text,
+  metadata jsonb not null default '{}'::jsonb,
+  actor_id uuid references auth.users(id) on delete set null,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists point_transactions_user_created_idx
+  on public.point_transactions (user_id, created_at desc);
+
+create index if not exists point_transactions_prediction_idx
+  on public.point_transactions (prediction_id);
+
+alter table public.point_transactions enable row level security;
+
+drop policy if exists "Users can read own point transactions" on public.point_transactions;
+create policy "Users can read own point transactions"
+  on public.point_transactions
+  for select
+  to authenticated
+  using (auth.uid() = user_id);
+
+create or replace function public.ensure_user_point_account()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  insert into public.point_accounts (user_id, balance)
+  values (new.id, 0)
+  on conflict (user_id) do nothing;
+  return new;
+end;
+$$;
+
+drop trigger if exists auth_user_create_point_account on auth.users;
+create trigger auth_user_create_point_account
+  after insert on auth.users
+  for each row
+  execute function public.ensure_user_point_account();
+
+insert into public.point_accounts (user_id, balance)
+select users.id, 0
+from auth.users users
+on conflict (user_id) do nothing;
+
+create or replace function public.record_point_transaction(
+  target_user_id uuid,
+  target_prediction_id uuid,
+  transaction_kind text,
+  transaction_amount numeric,
+  resulting_balance numeric,
+  transaction_note text default null,
+  transaction_metadata jsonb default '{}'::jsonb
+)
+returns void
+language plpgsql
+set search_path = public
+as $$
+begin
+  insert into public.point_transactions (
+    user_id,
+    prediction_id,
+    kind,
+    amount,
+    balance_after,
+    note,
+    metadata,
+    actor_id
+  )
+  values (
+    target_user_id,
+    target_prediction_id,
+    transaction_kind,
+    transaction_amount,
+    resulting_balance,
+    nullif(trim(transaction_note), ''),
+    coalesce(transaction_metadata, '{}'::jsonb),
+    auth.uid()
+  );
+end;
+$$;
+
+revoke all on function public.record_point_transaction(uuid, uuid, text, numeric, numeric, text, jsonb) from public;
+
+create or replace function public.poisson_probability(lambda_value numeric, goals integer)
+returns numeric
+language plpgsql
+immutable
+strict
+as $$
+declare
+  result_value double precision;
+  goal_index integer;
+begin
+  if lambda_value <= 0 or goals < 0 then
+    return 0;
+  end if;
+
+  result_value := exp(-lambda_value::double precision);
+  if goals > 0 then
+    for goal_index in 1..goals loop
+      result_value := result_value * lambda_value::double precision / goal_index;
+    end loop;
+  end if;
+  return result_value::numeric;
+end;
+$$;
+
+create or replace function public.resolve_prediction_probability(
+  market public.prediction_markets,
+  prediction_type_value text,
+  outcome_value text,
+  home_score_value integer,
+  away_score_value integer
+)
+returns numeric
+language plpgsql
+stable
+set search_path = public
+as $$
+declare
+  listed_probability numeric;
+  listed_model_mass numeric;
+  model_probability numeric;
+  unlisted_model_mass numeric;
+begin
+  if prediction_type_value = 'outcome' then
+    return case outcome_value
+      when 'home' then market.home_win_probability
+      when 'draw' then market.draw_probability
+      when 'away' then market.away_win_probability
+      else null
+    end;
+  end if;
+
+  if prediction_type_value <> 'score'
+    or home_score_value is null
+    or away_score_value is null
+    or home_score_value < 0
+    or away_score_value < 0
+    or home_score_value > 20
+    or away_score_value > 20 then
+    return null;
+  end if;
+
+  select (score_item ->> 'probability')::numeric
+  into listed_probability
+  from jsonb_array_elements(coalesce(market.exact_scores, '[]'::jsonb)) score_item
+  where (score_item ->> 'home')::integer = home_score_value
+    and (score_item ->> 'away')::integer = away_score_value
+  limit 1;
+
+  if listed_probability is not null then
+    return listed_probability;
+  end if;
+
+  model_probability :=
+    public.poisson_probability(market.lambda_home, home_score_value) *
+    public.poisson_probability(market.lambda_away, away_score_value);
+
+  if market.exact_other_probability is null or jsonb_array_length(market.exact_scores) = 0 then
+    return model_probability;
+  end if;
+
+  select coalesce(sum(
+    public.poisson_probability(market.lambda_home, (score_item ->> 'home')::integer) *
+    public.poisson_probability(market.lambda_away, (score_item ->> 'away')::integer)
+  ), 0)
+  into listed_model_mass
+  from jsonb_array_elements(market.exact_scores) score_item;
+
+  unlisted_model_mass := greatest(0.000001, 1 - listed_model_mass);
+  return market.exact_other_probability * model_probability / unlisted_model_mass;
+end;
+$$;
+
+revoke all on function public.resolve_prediction_probability(public.prediction_markets, text, text, integer, integer) from public;
+
+create or replace function public.admin_upsert_prediction_markets(markets jsonb)
+returns integer
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  upserted_count integer;
+begin
+  if not public.can_manage_match_results() then
+    raise exception 'not authorized' using errcode = '42501';
+  end if;
+
+  if markets is null or jsonb_typeof(markets) <> 'array' then
+    raise exception 'markets must be a json array' using errcode = '22023';
+  end if;
+
+  with input as (
+    select *
+    from jsonb_to_recordset(markets) as item(
+      match_id text,
+      match_label text,
+      match_kickoff_utc timestamptz,
+      home_team text,
+      away_team text,
+      lambda_home numeric,
+      lambda_away numeric,
+      home_win_probability numeric,
+      draw_probability numeric,
+      away_win_probability numeric,
+      exact_scores jsonb,
+      exact_other_probability numeric,
+      source text,
+      snapshot_at timestamptz
+    )
+  ),
+  valid as (
+    select
+      trim(match_id) as match_id,
+      coalesce(nullif(trim(match_label), ''), trim(match_id)) as match_label,
+      match_kickoff_utc,
+      coalesce(nullif(trim(home_team), ''), 'Home') as home_team,
+      coalesce(nullif(trim(away_team), ''), 'Away') as away_team,
+      lambda_home,
+      lambda_away,
+      home_win_probability,
+      draw_probability,
+      away_win_probability,
+      case
+        when jsonb_typeof(exact_scores) = 'array' then exact_scores
+        else '[]'::jsonb
+      end as exact_scores,
+      exact_other_probability,
+      nullif(trim(source), '') as source,
+      coalesce(snapshot_at, now()) as snapshot_at
+    from input
+    where nullif(trim(match_id), '') is not null
+      and match_kickoff_utc is not null
+      and lambda_home > 0
+      and lambda_away > 0
+      and home_win_probability > 0 and home_win_probability <= 1
+      and draw_probability > 0 and draw_probability <= 1
+      and away_win_probability > 0 and away_win_probability <= 1
+      and home_win_probability + draw_probability + away_win_probability between 0.98 and 1.02
+      and (exact_other_probability is null or exact_other_probability between 0 and 1)
+  ),
+  upserted as (
+    insert into public.prediction_markets (
+      match_id,
+      match_label,
+      match_kickoff_utc,
+      home_team,
+      away_team,
+      lambda_home,
+      lambda_away,
+      home_win_probability,
+      draw_probability,
+      away_win_probability,
+      exact_scores,
+      exact_other_probability,
+      source,
+      snapshot_at
+    )
+    select
+      valid.match_id,
+      valid.match_label,
+      valid.match_kickoff_utc,
+      valid.home_team,
+      valid.away_team,
+      valid.lambda_home,
+      valid.lambda_away,
+      valid.home_win_probability,
+      valid.draw_probability,
+      valid.away_win_probability,
+      valid.exact_scores,
+      valid.exact_other_probability,
+      valid.source,
+      valid.snapshot_at
+    from valid
+    on conflict (match_id) do update
+    set
+      match_label = excluded.match_label,
+      match_kickoff_utc = excluded.match_kickoff_utc,
+      home_team = excluded.home_team,
+      away_team = excluded.away_team,
+      lambda_home = excluded.lambda_home,
+      lambda_away = excluded.lambda_away,
+      home_win_probability = excluded.home_win_probability,
+      draw_probability = excluded.draw_probability,
+      away_win_probability = excluded.away_win_probability,
+      exact_scores = excluded.exact_scores,
+      exact_other_probability = excluded.exact_other_probability,
+      source = excluded.source,
+      snapshot_at = excluded.snapshot_at,
+      updated_at = now()
+    returning 1
+  )
+  select count(*)::integer into upserted_count
+  from upserted;
+
+  return coalesce(upserted_count, 0);
+end;
+$$;
+
+revoke all on function public.admin_upsert_prediction_markets(jsonb) from public;
+grant execute on function public.admin_upsert_prediction_markets(jsonb) to authenticated, service_role;
+
+create or replace function public.get_my_point_balance()
+returns numeric
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  current_balance numeric;
+begin
+  if auth.uid() is null then
+    raise exception 'not authorized' using errcode = '42501';
+  end if;
+
+  insert into public.point_accounts (user_id, balance)
+  values (auth.uid(), 0)
+  on conflict (user_id) do nothing;
+
+  select accounts.balance into current_balance
+  from public.point_accounts accounts
+  where accounts.user_id = auth.uid();
+
+  return coalesce(current_balance, 0);
+end;
+$$;
+
+revoke all on function public.get_my_point_balance() from public;
+grant execute on function public.get_my_point_balance() to authenticated;
+
+create or replace function public.submit_prediction(prediction_payload jsonb)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  current_user_id uuid := auth.uid();
+  market_row public.prediction_markets%rowtype;
+  existing_prediction public.predictions%rowtype;
+  saved_prediction public.predictions%rowtype;
+  has_existing boolean := false;
+  prediction_type_value text;
+  outcome_value text;
+  home_score_value integer;
+  away_score_value integer;
+  stake_value numeric;
+  probability_value numeric;
+  probability_label text;
+  display_name_value text;
+  current_balance numeric;
+begin
+  if current_user_id is null then
+    raise exception 'not authorized' using errcode = '42501';
+  end if;
+
+  if prediction_payload is null or jsonb_typeof(prediction_payload) <> 'object' then
+    raise exception 'invalid prediction payload' using errcode = '22023';
+  end if;
+
+  prediction_type_value := trim(coalesce(prediction_payload ->> 'prediction_type', ''));
+  outcome_value := nullif(trim(coalesce(prediction_payload ->> 'outcome', '')), '');
+  home_score_value := nullif(prediction_payload ->> 'home_score', '')::integer;
+  away_score_value := nullif(prediction_payload ->> 'away_score', '')::integer;
+  stake_value := round((prediction_payload ->> 'stake_points')::numeric, 2);
+
+  if stake_value is null or stake_value < 1 or stake_value > 1000000 then
+    raise exception 'stake must be at least 1 point' using errcode = '22023';
+  end if;
+
+  select markets.* into market_row
+  from public.prediction_markets markets
+  where markets.match_id = trim(coalesce(prediction_payload ->> 'match_id', ''));
+
+  if not found then
+    raise exception 'prediction market unavailable' using errcode = '22023';
+  end if;
+
+  if market_row.match_kickoff_utc <= now()
+    or exists (
+      select 1 from public.match_results results
+      where results.match_id = market_row.match_id
+        and results.status = 'finished'
+    ) then
+    raise exception 'match already started' using errcode = '22023';
+  end if;
+
+  probability_value := public.resolve_prediction_probability(
+    market_row,
+    prediction_type_value,
+    outcome_value,
+    home_score_value,
+    away_score_value
+  );
+
+  if probability_value is null or probability_value <= 0 or probability_value > 1 then
+    raise exception 'invalid prediction choice' using errcode = '22023';
+  end if;
+
+  if prediction_type_value = 'outcome' then
+    probability_label := case outcome_value
+      when 'home' then market_row.home_team || ' 胜'
+      when 'draw' then '平局'
+      when 'away' then market_row.away_team || ' 胜'
+    end;
+    home_score_value := null;
+    away_score_value := null;
+  elsif prediction_type_value = 'score' then
+    outcome_value := null;
+    probability_label := home_score_value::text || '-' || away_score_value::text;
+  else
+    raise exception 'invalid prediction choice' using errcode = '22023';
+  end if;
+
+  select coalesce(
+    nullif(profiles.username, ''),
+    nullif(trim(prediction_payload ->> 'display_name'), ''),
+    '用户 ' || left(current_user_id::text, 8)
+  )
+  into display_name_value
+  from (select 1) seed
+  left join public.user_profiles profiles on profiles.user_id = current_user_id;
+
+  insert into public.point_accounts (user_id, balance)
+  values (current_user_id, 0)
+  on conflict (user_id) do nothing;
+
+  select accounts.balance into current_balance
+  from public.point_accounts accounts
+  where accounts.user_id = current_user_id
+  for update;
+
+  select predictions.* into existing_prediction
+  from public.predictions predictions
+  where predictions.user_id = current_user_id
+    and predictions.match_id = market_row.match_id
+  for update;
+  has_existing := found;
+
+  if has_existing then
+    if existing_prediction.settled_at is not null or existing_prediction.match_kickoff_utc <= now() then
+      raise exception 'prediction can no longer be changed' using errcode = '22023';
+    end if;
+
+    if existing_prediction.stake_points is not null then
+      current_balance := current_balance + existing_prediction.stake_points;
+      update public.point_accounts
+      set balance = current_balance
+      where user_id = current_user_id;
+      perform public.record_point_transaction(
+        current_user_id,
+        existing_prediction.id,
+        'prediction_refund',
+        existing_prediction.stake_points,
+        current_balance,
+        '更新预测时退回原投入',
+        jsonb_build_object('match_id', market_row.match_id)
+      );
+    end if;
+  end if;
+
+  if current_balance < stake_value then
+    raise exception 'insufficient points' using errcode = '22023';
+  end if;
+
+  if has_existing then
+    update public.predictions
+    set
+      match_kickoff_utc = market_row.match_kickoff_utc,
+      match_label = market_row.match_label,
+      home_team = market_row.home_team,
+      away_team = market_row.away_team,
+      display_name = display_name_value,
+      prediction_type = prediction_type_value,
+      outcome = outcome_value,
+      home_score = home_score_value,
+      away_score = away_score_value,
+      model_probability = probability_value,
+      model_probability_label = probability_label,
+      model_snapshot_at = market_row.snapshot_at,
+      stake_points = stake_value,
+      payout_points = 0,
+      is_correct = null,
+      settled_at = null,
+      is_public = true,
+      updated_at = now()
+    where id = existing_prediction.id
+    returning * into saved_prediction;
+  else
+    insert into public.predictions (
+      user_id,
+      match_id,
+      match_kickoff_utc,
+      match_label,
+      home_team,
+      away_team,
+      display_name,
+      prediction_type,
+      outcome,
+      home_score,
+      away_score,
+      model_probability,
+      model_probability_label,
+      model_snapshot_at,
+      stake_points,
+      payout_points,
+      is_public
+    )
+    values (
+      current_user_id,
+      market_row.match_id,
+      market_row.match_kickoff_utc,
+      market_row.match_label,
+      market_row.home_team,
+      market_row.away_team,
+      display_name_value,
+      prediction_type_value,
+      outcome_value,
+      home_score_value,
+      away_score_value,
+      probability_value,
+      probability_label,
+      market_row.snapshot_at,
+      stake_value,
+      0,
+      true
+    )
+    returning * into saved_prediction;
+  end if;
+
+  current_balance := current_balance - stake_value;
+  update public.point_accounts
+  set balance = current_balance
+  where user_id = current_user_id;
+
+  perform public.record_point_transaction(
+    current_user_id,
+    saved_prediction.id,
+    'prediction_stake',
+    -stake_value,
+    current_balance,
+    '提交比赛预测',
+    jsonb_build_object(
+      'match_id', market_row.match_id,
+      'probability', probability_value
+    )
+  );
+
+  return jsonb_build_object(
+    'balance', current_balance,
+    'prediction', to_jsonb(saved_prediction)
+  );
+end;
+$$;
+
+revoke all on function public.submit_prediction(jsonb) from public;
+grant execute on function public.submit_prediction(jsonb) to authenticated;
+
+create or replace function public.reconcile_prediction_points()
+returns integer
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  assessed record;
+  correct_value boolean;
+  desired_payout numeric;
+  payout_delta numeric;
+  current_balance numeric;
+  reconciled_count integer := 0;
+begin
+  if not public.can_manage_match_results() then
+    raise exception 'not authorized' using errcode = '42501';
+  end if;
+
+  for assessed in
+    select
+      predictions.*,
+      results.home_score as result_home_score,
+      results.away_score as result_away_score
+    from public.predictions predictions
+    join lateral (
+      select match_results.*
+      from public.match_results match_results
+      where match_results.status = 'finished'
+        and (
+          match_results.match_id = predictions.match_id
+          or (
+            match_results.match_kickoff_utc is not null
+            and predictions.match_kickoff_utc is not null
+            and abs(extract(epoch from (match_results.match_kickoff_utc - predictions.match_kickoff_utc))) <= 18 * 60 * 60
+            and lower(regexp_replace(coalesce(match_results.home_team, ''), '\s+', '', 'g')) =
+              lower(regexp_replace(coalesce(predictions.home_team, ''), '\s+', '', 'g'))
+            and lower(regexp_replace(coalesce(match_results.away_team, ''), '\s+', '', 'g')) =
+              lower(regexp_replace(coalesce(predictions.away_team, ''), '\s+', '', 'g'))
+          )
+        )
+      order by
+        case when match_results.match_id = predictions.match_id then 0 else 1 end,
+        abs(extract(epoch from (match_results.match_kickoff_utc - predictions.match_kickoff_utc))) nulls last
+      limit 1
+    ) results on true
+    where predictions.stake_points is not null
+      and predictions.model_probability is not null
+      and predictions.model_probability > 0
+  loop
+    correct_value := case
+      when assessed.prediction_type = 'score' then
+        assessed.home_score = assessed.result_home_score
+        and assessed.away_score = assessed.result_away_score
+      when assessed.prediction_type = 'outcome' then
+        assessed.outcome = case
+          when assessed.result_home_score > assessed.result_away_score then 'home'
+          when assessed.result_home_score < assessed.result_away_score then 'away'
+          else 'draw'
+        end
+      else false
+    end;
+
+    desired_payout := case
+      when correct_value then round(assessed.stake_points / assessed.model_probability, 4)
+      else 0
+    end;
+
+    if assessed.settled_at is null
+      or assessed.is_correct is distinct from correct_value
+      or coalesce(assessed.payout_points, 0) is distinct from desired_payout then
+      insert into public.point_accounts (user_id, balance)
+      values (assessed.user_id, 0)
+      on conflict (user_id) do nothing;
+
+      select accounts.balance into current_balance
+      from public.point_accounts accounts
+      where accounts.user_id = assessed.user_id
+      for update;
+
+      payout_delta := desired_payout - coalesce(assessed.payout_points, 0);
+      if payout_delta <> 0 then
+        current_balance := current_balance + payout_delta;
+        update public.point_accounts
+        set balance = current_balance
+        where user_id = assessed.user_id;
+
+        perform public.record_point_transaction(
+          assessed.user_id,
+          assessed.id,
+          'prediction_settlement',
+          payout_delta,
+          current_balance,
+          case when correct_value then '预测命中返还' else '赛果更正结算调整' end,
+          jsonb_build_object(
+            'match_id', assessed.match_id,
+            'correct', correct_value,
+            'payout', desired_payout,
+            'result', assessed.result_home_score::text || '-' || assessed.result_away_score::text
+          )
+        );
+      end if;
+
+      update public.predictions
+      set
+        is_correct = correct_value,
+        payout_points = desired_payout,
+        settled_at = now(),
+        updated_at = now()
+      where id = assessed.id;
+
+      reconciled_count := reconciled_count + 1;
+    end if;
+  end loop;
+
+  return reconciled_count;
+end;
+$$;
+
+revoke all on function public.reconcile_prediction_points() from public;
+grant execute on function public.reconcile_prediction_points() to authenticated, service_role;
+
+create or replace function public.admin_adjust_user_points(
+  target_user_id uuid,
+  adjustment numeric,
+  note text default null
+)
+returns numeric
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+declare
+  adjustment_value numeric;
+  current_balance numeric;
+  next_balance numeric;
+begin
+  if not public.is_admin() then
+    raise exception 'not authorized' using errcode = '42501';
+  end if;
+
+  adjustment_value := round(adjustment, 2);
+  if adjustment_value is null or adjustment_value = 0 or abs(adjustment_value) > 1000000 then
+    raise exception 'invalid point adjustment' using errcode = '22023';
+  end if;
+
+  if not exists (select 1 from auth.users users where users.id = target_user_id) then
+    raise exception 'user not found' using errcode = '22023';
+  end if;
+
+  insert into public.point_accounts (user_id, balance)
+  values (target_user_id, 0)
+  on conflict (user_id) do nothing;
+
+  select accounts.balance into current_balance
+  from public.point_accounts accounts
+  where accounts.user_id = target_user_id
+  for update;
+
+  next_balance := current_balance + adjustment_value;
+  if adjustment_value < 0 and next_balance < 0 then
+    raise exception 'insufficient points' using errcode = '22023';
+  end if;
+
+  update public.point_accounts
+  set balance = next_balance
+  where user_id = target_user_id;
+
+  perform public.record_point_transaction(
+    target_user_id,
+    null,
+    'admin_adjustment',
+    adjustment_value,
+    next_balance,
+    coalesce(nullif(trim(note), ''), '管理员分配点数'),
+    '{}'::jsonb
+  );
+
+  return next_balance;
+end;
+$$;
+
+revoke all on function public.admin_adjust_user_points(uuid, numeric, text) from public;
+grant execute on function public.admin_adjust_user_points(uuid, numeric, text) to authenticated;
 
 drop policy if exists "Admins can manage match results" on public.match_results;
 create policy "Admins can manage match results"
@@ -450,6 +1281,8 @@ begin
   select count(*)::integer into upserted_count
   from upserted;
 
+  perform public.reconcile_prediction_points();
+
   return coalesce(upserted_count, 0);
 end;
 $$;
@@ -459,7 +1292,7 @@ grant execute on function public.admin_upsert_match_results(jsonb) to authentica
 
 drop function if exists public.get_public_leaderboard(integer);
 
-create or replace function public.get_public_leaderboard(min_predictions integer default 1)
+create or replace function public.get_public_leaderboard(min_predictions integer default 0)
 returns table (
   user_id uuid,
   display_name text,
@@ -467,11 +1300,15 @@ returns table (
   settled_count bigint,
   accuracy numeric,
   score numeric,
+  point_balance numeric,
+  wagered_points numeric,
+  payout_points numeric,
+  pending_stake_points numeric,
   latest_prediction_at timestamptz
 )
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, auth
 as $$
 begin
   if auth.uid() is null then
@@ -479,90 +1316,69 @@ begin
   end if;
 
   return query
-  with assessed as (
+  with prediction_stats as (
     select
       predictions.user_id,
-      coalesce(
-        nullif(profiles.username, ''),
-        nullif(predictions.display_name, ''),
-        'user ' || left(predictions.user_id::text, 8)
-      ) as display_name,
-      predictions.created_at,
-      predictions.model_probability,
-      case
-        when predictions.prediction_type = 'score' then
-          predictions.home_score = match_results.home_score
-          and predictions.away_score = match_results.away_score
-        when predictions.prediction_type = 'outcome' then
-          predictions.outcome = case
-            when match_results.home_score > match_results.away_score then 'home'
-            when match_results.home_score < match_results.away_score then 'away'
-            else 'draw'
-          end
-        else false
-      end as correct
+      count(*) filter (
+        where predictions.stake_points is not null
+          and predictions.settled_at is not null
+          and predictions.is_correct is true
+      ) as correct_count,
+      count(*) filter (
+        where predictions.stake_points is not null
+          and predictions.settled_at is not null
+      ) as settled_count,
+      coalesce(sum(predictions.stake_points) filter (
+        where predictions.stake_points is not null
+      ), 0) as wagered_points,
+      coalesce(sum(predictions.payout_points) filter (
+        where predictions.stake_points is not null
+      ), 0) as payout_points,
+      coalesce(sum(predictions.stake_points) filter (
+        where predictions.stake_points is not null
+          and predictions.settled_at is null
+      ), 0) as pending_stake_points,
+      max(predictions.created_at) filter (
+        where predictions.stake_points is not null
+      ) as latest_prediction_at
     from public.predictions predictions
-    join lateral (
-      select match_results.*
-      from public.match_results match_results
-      where match_results.status = 'finished'
-        and (
-          match_results.match_id = predictions.match_id
-          or (
-            match_results.match_kickoff_utc is not null
-            and predictions.match_kickoff_utc is not null
-            and abs(extract(epoch from (match_results.match_kickoff_utc - predictions.match_kickoff_utc))) <= 18 * 60 * 60
-            and lower(regexp_replace(coalesce(match_results.home_team, ''), '\s+', '', 'g')) =
-              lower(regexp_replace(coalesce(predictions.home_team, ''), '\s+', '', 'g'))
-            and lower(regexp_replace(coalesce(match_results.away_team, ''), '\s+', '', 'g')) =
-              lower(regexp_replace(coalesce(predictions.away_team, ''), '\s+', '', 'g'))
-          )
-        )
-      order by
-        case when match_results.match_id = predictions.match_id then 0 else 1 end,
-        abs(extract(epoch from (match_results.match_kickoff_utc - predictions.match_kickoff_utc))) nulls last
-      limit 1
-    ) match_results on true
-    left join public.user_profiles profiles
-      on profiles.user_id = predictions.user_id
     where predictions.is_public = true
-      and predictions.created_at < predictions.match_kickoff_utc
+    group by predictions.user_id
   )
   select
-    assessed.user_id,
-    max(assessed.display_name) as display_name,
-    count(*) filter (where assessed.correct) as correct_count,
-    count(*) as settled_count,
-    (count(*) filter (where assessed.correct))::numeric / nullif(count(*), 0)::numeric as accuracy,
-    sum(
-      case
-        when assessed.correct is true
-          and assessed.model_probability is not null
-          and assessed.model_probability > 0
-          then 1::numeric / assessed.model_probability
-        when assessed.correct is true then 1::numeric
-        else 0::numeric
-      end
-    ) as score,
-    max(assessed.created_at) as latest_prediction_at
-  from assessed
-  group by assessed.user_id
-  having count(*) >= greatest(1, coalesce(min_predictions, 1))
+    accounts.user_id,
+    coalesce(
+      nullif(profiles.username, ''),
+      nullif(users.raw_user_meta_data ->> 'display_name', ''),
+      nullif(users.raw_user_meta_data ->> 'username', ''),
+      '用户 ' || left(accounts.user_id::text, 8)
+    ) as display_name,
+    coalesce(stats.correct_count, 0)::bigint as correct_count,
+    coalesce(stats.settled_count, 0)::bigint as settled_count,
+    case
+      when coalesce(stats.settled_count, 0) > 0
+      then stats.correct_count::numeric / stats.settled_count::numeric
+      else 0::numeric
+    end as accuracy,
+    accounts.balance as score,
+    accounts.balance as point_balance,
+    coalesce(stats.wagered_points, 0) as wagered_points,
+    coalesce(stats.payout_points, 0) as payout_points,
+    coalesce(stats.pending_stake_points, 0) as pending_stake_points,
+    stats.latest_prediction_at
+  from public.point_accounts accounts
+  join auth.users users on users.id = accounts.user_id
+  left join public.user_profiles profiles on profiles.user_id = accounts.user_id
+  left join prediction_stats stats on stats.user_id = accounts.user_id
+  where users.email like '%@users.worldcup-lookup.app'
+    and (accounts.balance <> 0 or coalesce(stats.wagered_points, 0) > 0)
+    and coalesce(stats.settled_count, 0) >= greatest(0, coalesce(min_predictions, 0))
   order by
-    sum(
-      case
-        when assessed.correct is true
-          and assessed.model_probability is not null
-          and assessed.model_probability > 0
-          then 1::numeric / assessed.model_probability
-        when assessed.correct is true then 1::numeric
-        else 0::numeric
-      end
-    ) desc,
-    ((count(*) filter (where assessed.correct))::numeric / nullif(count(*), 0)::numeric) desc,
-    count(*) filter (where assessed.correct) desc,
-    count(*) desc,
-    max(assessed.created_at) desc
+    accounts.balance desc,
+    coalesce(stats.payout_points, 0) desc,
+    coalesce(stats.correct_count, 0) desc,
+    stats.latest_prediction_at desc nulls last,
+    accounts.user_id
   limit 50;
 end;
 $$;
@@ -570,12 +1386,16 @@ $$;
 revoke all on function public.get_public_leaderboard(integer) from public;
 grant execute on function public.get_public_leaderboard(integer) to authenticated;
 
+drop function if exists public.admin_list_users();
+
 create or replace function public.admin_list_users()
 returns table (
   user_id uuid,
   username text,
   auth_created_at timestamptz,
   last_sign_in_at timestamptz,
+  point_balance numeric,
+  pending_stake_points numeric,
   prediction_count bigint,
   public_prediction_count bigint,
   private_prediction_count bigint,
@@ -604,21 +1424,29 @@ begin
     ) as username,
     users.created_at,
     users.last_sign_in_at,
+    coalesce(accounts.balance, 0) as point_balance,
+    coalesce(sum(predictions.stake_points) filter (
+      where predictions.stake_points is not null
+        and predictions.settled_at is null
+    ), 0) as pending_stake_points,
     count(predictions.id) as prediction_count,
     count(predictions.id) filter (where predictions.is_public) as public_prediction_count,
     count(predictions.id) filter (where not predictions.is_public) as private_prediction_count,
     max(predictions.created_at) as latest_prediction_at
   from auth.users users
   left join public.user_profiles profiles on profiles.user_id = users.id
+  left join public.point_accounts accounts on accounts.user_id = users.id
   left join public.predictions predictions on predictions.user_id = users.id
   where users.email like '%@users.worldcup-lookup.app'
-  group by users.id, profiles.username, users.raw_user_meta_data, users.created_at, users.last_sign_in_at
-  order by count(predictions.id) desc, max(predictions.created_at) desc nulls last, users.created_at desc;
+  group by users.id, profiles.username, accounts.balance, users.raw_user_meta_data, users.created_at, users.last_sign_in_at
+  order by coalesce(accounts.balance, 0) desc, count(predictions.id) desc, users.created_at desc;
 end;
 $$;
 
 revoke all on function public.admin_list_users() from public;
 grant execute on function public.admin_list_users() to authenticated;
+
+drop function if exists public.admin_list_user_predictions(uuid);
 
 create or replace function public.admin_list_user_predictions(target_user_id uuid)
 returns table (
@@ -637,6 +1465,10 @@ returns table (
   model_probability numeric,
   model_probability_label text,
   model_snapshot_at timestamptz,
+  stake_points numeric,
+  payout_points numeric,
+  is_correct boolean,
+  settled_at timestamptz,
   is_public boolean,
   created_at timestamptz,
   updated_at timestamptz
@@ -667,6 +1499,10 @@ begin
     predictions.model_probability,
     predictions.model_probability_label,
     predictions.model_snapshot_at,
+    predictions.stake_points,
+    predictions.payout_points,
+    predictions.is_correct,
+    predictions.settled_at,
     predictions.is_public,
     predictions.created_at,
     predictions.updated_at
@@ -688,9 +1524,44 @@ as $$
 declare
   deleted_count integer;
   deleted_award_count integer;
+  refunded_points numeric;
+  current_balance numeric;
 begin
   if not public.is_admin() then
     raise exception 'not authorized' using errcode = '42501';
+  end if;
+
+  select coalesce(sum(predictions.stake_points), 0)
+  into refunded_points
+  from public.predictions predictions
+  where predictions.user_id = target_user_id
+    and predictions.stake_points is not null
+    and predictions.settled_at is null;
+
+  if refunded_points > 0 then
+    insert into public.point_accounts (user_id, balance)
+    values (target_user_id, 0)
+    on conflict (user_id) do nothing;
+
+    select accounts.balance into current_balance
+    from public.point_accounts accounts
+    where accounts.user_id = target_user_id
+    for update;
+
+    current_balance := current_balance + refunded_points;
+    update public.point_accounts
+    set balance = current_balance
+    where user_id = target_user_id;
+
+    perform public.record_point_transaction(
+      target_user_id,
+      null,
+      'admin_refund',
+      refunded_points,
+      current_balance,
+      '清空预测时退回未结算投入',
+      '{}'::jsonb
+    );
   end if;
 
   delete from public.predictions predictions

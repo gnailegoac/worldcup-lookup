@@ -25,23 +25,28 @@
 2. 在 Supabase SQL Editor 运行 `supabase/schema.sql`。已经建过表时也可以重新运行，它会补齐新增字段。
 3. 在 `supabase-config.js` 填入项目的 URL 和 anon key，然后重新发布。
 4. Supabase Auth 里启用 Email provider，并关闭 Confirm email。
-5. 如需自动结算排行榜，在 GitHub 仓库的 Actions secrets 里添加 `SUPABASE_SERVICE_ROLE_KEY`。它来自 Supabase Project Settings 的 service role secret，只能放在 GitHub Secrets，不能写进前端代码或仓库。`SUPABASE_URL` 可选；不填时会使用 `supabase-config.js` 里的项目 URL。
+5. 如需自动同步服务端概率和结算点数，在 GitHub 仓库的 Actions secrets 里添加 `SUPABASE_SERVICE_ROLE_KEY`。它来自 Supabase Project Settings 的 service role secret，只能放在 GitHub Secrets，不能写进前端代码或仓库。`SUPABASE_URL` 可选；不填时会使用 `supabase-config.js` 里的项目 URL。
 
 权限设计：
 
-- 用户只能插入、更新、删除自己的预测。
+- 用户只能通过安全 RPC 提交或更新自己的比赛预测，不能绕过扣点直接写预测表或点数账户。
 - 用户可以读取自己的全部预测。
 - 登录用户可以读取所有预测；未登录用户不能查看用户预测和排行榜。
 - 每个用户对每场比赛只有一条预测；重复提交会更新原记录。
 - 每个用户对金球奖、金靴奖、金手套奖各有一条预测；重复提交会更新原记录。
 - 预测记录会保存提交时系统给出的胜平负或比分概率，用于历史记录回看。
-- 预测排行榜按积分排序：命中一条预测时，得分为提交当时系统概率的倒数，即 `1 / 概率`；未命中不得分。旧记录如果没有保存概率，命中时按 1 分兜底。
+- 管理员为用户增加或扣除点数，每次调整都会写入点数流水。新用户初始为 0 点。
+- 用户提交比赛预测时分配本次投入点数，提交后立即扣除。命中时返还 `投入点数 / 提交时概率`，未命中不返还；返还包含原投入。例如投入 10 点、概率 25%，命中返还 40 点。
+- 更新尚未开赛的预测时，系统会先退回原投入，再扣除新投入。旧预测不会补扣点，也不参与点数结算。
+- 比赛概率由 GitHub Actions 或管理员同步到 Supabase，数据库提交 RPC 使用服务端概率快照，不采信浏览器自行传入的概率。
+- 点数排行榜按当前可用点数排序，并显示已结算命中数和待结算投入。
+- 奖项预测目前不投入点数，因为金球奖、金靴奖、金手套奖要到赛事结束后才有官方赛果。
 - 所有预测都会公开展示，不再支持非公开预测；重新运行 SQL 会把旧的非公开记录改成公开。
 - 用户界面只显示用户名和密码。前端会把用户名映射成内部邮箱交给 Supabase Auth，用户不需要输入真实邮箱；自定义用户名会单独保存在 `user_profiles`，不会因为清空预测记录而丢失。
 
 ## 管理员
 
-`supabase/schema.sql` 会创建管理员名单和安全 RPC。重新运行 SQL 后，名单里的管理员登录页面即可看到管理员面板，可以查看用户列表、查看某个用户的预测记录、清空该用户的预测记录，并删除旧用户账号。
+`supabase/schema.sql` 会创建管理员名单和安全 RPC。重新运行 SQL 后，名单里的管理员登录页面即可看到管理员面板，可以查看用户及余额、增加或扣除点数、查看预测记录、清空预测，并删除旧用户账号。清空预测时，尚未结算的投入会自动退回。
 
 ## 实时数据
 
@@ -55,7 +60,7 @@
 - 赛程/比分同步会尽量保留本地已有 `lambdaHome/lambdaAway` 和赔率。
 - 赔率同步会聚合同一场比赛多个 bookmaker 的 1X2 赔率均值，去水后反推 `lambdaHome/lambdaAway`。
 - 如果接口失败，页面会保留现有本地数据并在实时状态栏显示错误。
-- GitHub Actions 每 5 分钟刷新 `data/worldcup26-games.json`，并在配置 `SUPABASE_SERVICE_ROLE_KEY` 后自动把已完赛比分写入 Supabase `match_results`，供预测排行榜统一结算。
+- GitHub Actions 每 5 分钟刷新 `data/worldcup26-games.json` 和 Polymarket 缓存；配置 `SUPABASE_SERVICE_ROLE_KEY` 后，还会同步服务端概率快照，并把已完赛比分写入 Supabase。赛果写入后会自动结算点数，赛果更正时也会自动调整已返还点数。
 - 奖项概率由前端根据当前赛程缓存滚动计算：金靴主要使用进球者和剩余赛程，金球综合进球贡献和球队走势，金手套使用球队失球、零封和剩余赛程。赛程/比分同步后，这三项概率会随比赛进程更新。
 
 ## 数据结构

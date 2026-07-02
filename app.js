@@ -17,7 +17,7 @@ const MAX_EXACT_GOALS = 6;
 const MAX_WDL_GOALS = 12;
 const SHOW_ADMIN_TOOLS = false;
 const AUTH_REFRESH_MARGIN_MS = 2 * 60 * 1000;
-const LEADERBOARD_MIN_SETTLED_PREDICTIONS = 1;
+const LEADERBOARD_MIN_SETTLED_PREDICTIONS = 0;
 const AUTO_SCHEDULE_SYNC_MAX_AGE_MS = 15 * 60 * 1000;
 const PENDING_RESULT_RETRY_MS = 60 * 1000;
 const MIN_LIVE_SCHEDULE_MATCHES = 60;
@@ -656,6 +656,8 @@ const state = {
   authStatus: "未连接 Supabase",
   authNotice: "",
   predictionNotice: "",
+  pointBalance: null,
+  pointSchemaMissing: false,
   awardPredictionNotice: "",
   myPredictions: [],
   publicPredictions: [],
@@ -692,6 +694,7 @@ const els = {
   oddsSportKeyInput: document.getElementById("oddsSportKeyInput"),
   oddsRegionSelect: document.getElementById("oddsRegionSelect"),
   authStatus: document.getElementById("authStatus"),
+  pointBalance: document.getElementById("pointBalance"),
   usernameInput: document.getElementById("usernameInput"),
   passwordInput: document.getElementById("passwordInput"),
   loginButton: document.getElementById("loginButton"),
@@ -789,20 +792,27 @@ function bindEvents() {
   });
 
   els.matchDetail.addEventListener("input", (event) => {
-    if (!event.target.matches("[data-score-input]")) return;
-    const value = Number(event.target.value);
-    if (!Number.isFinite(value)) return;
-    const clipped = Math.max(0, Math.min(12, Math.trunc(value)));
-    if (event.target.dataset.scoreInput === "home") state.scoreHome = clipped;
-    if (event.target.dataset.scoreInput === "away") state.scoreAway = clipped;
-    renderDetail(getSelectedMatch());
+    if (event.target.matches("[data-score-input]")) {
+      const value = Number(event.target.value);
+      if (!Number.isFinite(value)) return;
+      const clipped = Math.max(0, Math.min(12, Math.trunc(value)));
+      if (event.target.dataset.scoreInput === "home") state.scoreHome = clipped;
+      if (event.target.dataset.scoreInput === "away") state.scoreAway = clipped;
+      renderDetail(getSelectedMatch());
+      return;
+    }
+
+    const predictionForm = event.target.closest("[data-prediction-form]");
+    if (predictionForm) updatePredictionPayoutPreview(getSelectedMatch(), predictionForm);
   });
 
   els.matchDetail.addEventListener("change", (event) => {
-    if (!event.target.matches("[name='predictionType']")) return;
     const form = event.target.closest("[data-prediction-form]");
     if (!form) return;
-    form.dataset.predictionType = event.target.value;
+    if (event.target.matches("[name='predictionType']")) {
+      form.dataset.predictionType = event.target.value;
+    }
+    updatePredictionPayoutPreview(getSelectedMatch(), form);
   });
 
   els.matchDetail.addEventListener("click", handleDetailAction);
@@ -890,6 +900,14 @@ function renderAuthStatus() {
   const user = state.authSession?.user;
   const name = getCurrentDisplayName();
   els.authStatus.textContent = state.authNotice || (user ? `已进入：${name}` : state.authStatus);
+  if (els.pointBalance) {
+    els.pointBalance.hidden = !user;
+    els.pointBalance.textContent = state.pointSchemaMissing
+      ? "点数功能待启用"
+      : state.pointBalance === null
+        ? "点数加载中..."
+        : `可用点数 ${formatPointAmount(state.pointBalance)}`;
+  }
   els.usernameInput.hidden = Boolean(user);
   els.passwordInput.hidden = Boolean(user);
   els.loginButton.hidden = Boolean(user);
@@ -1502,9 +1520,14 @@ function setAuthSession(session) {
   clearAuthExpiryTimer();
   if (session && isSessionExpired(session)) {
     state.authSession = null;
+    state.pointBalance = null;
     return false;
   }
   state.authSession = session || null;
+  if (!state.authSession) {
+    state.pointBalance = null;
+    state.pointSchemaMissing = false;
+  }
   if (state.authSession) scheduleAuthExpiry(state.authSession);
   return Boolean(state.authSession);
 }
@@ -1537,6 +1560,8 @@ async function expireAuthSession(message = "登录已过期，请重新登录。
     await state.supabase.auth.clearSession("TOKEN_EXPIRED");
   }
   state.authSession = null;
+  state.pointBalance = null;
+  state.pointSchemaMissing = false;
   state.myPredictions = [];
   state.publicPredictions = [];
   state.myAwardPredictions = [];
@@ -1619,33 +1644,26 @@ async function submitPrediction(match) {
   state.predictionNotice = "正在保存预测...";
   renderDetail(match);
   await saveUserProfile(payload.display_name);
-  let { error } = await state.supabase
-    .from("predictions")
-    .upsert(payload, { onConflict: "user_id,match_id" });
-
-  if (error && isPredictionProbabilitySchemaError(error)) {
-    const legacyPayload = stripPredictionProbabilitySnapshot(payload);
-    const legacyResult = await state.supabase
-      .from("predictions")
-      .upsert(legacyPayload, { onConflict: "user_id,match_id" });
-    error = legacyResult.error;
-    if (!error) {
-      state.predictionNotice = "预测已保存。请重新运行 supabase/schema.sql 后，新的预测记录会保存当时系统概率。";
-      await loadPredictions();
-      return;
-    }
-  }
+  const result = await state.supabase.rpc("submit_prediction", { prediction_payload: payload });
+  const { error } = result;
 
   if (isAuthExpiredError(error)) {
     await expireAuthSession();
     return;
   }
   if (error) {
-    state.predictionNotice = `预测提交失败：${error.message}`;
+    state.pointSchemaMissing = isMissingPointSchemaError(error);
+    state.predictionNotice = state.pointSchemaMissing
+      ? "请先重新运行 supabase/schema.sql，启用点数功能后再提交预测。"
+      : `预测提交失败：${formatPointError(error)}`;
     render();
     return;
   }
-  state.predictionNotice = "预测已保存。";
+  const saved = result.data?.prediction || {};
+  state.pointBalance = Number(result.data?.balance ?? state.pointBalance);
+  state.pointSchemaMissing = false;
+  const payout = Number(saved.payout_points) || payload.stake_points / Number(saved.model_probability || payload.model_probability);
+  state.predictionNotice = `预测已保存，投入 ${formatPointAmount(payload.stake_points)}；命中返还 ${formatPointAmount(payout)}。`;
   await loadPredictions();
 }
 
@@ -1710,6 +1728,18 @@ async function submitAwardPrediction(awardType) {
 
 function buildPredictionPayload(match, formData) {
   const predictionType = cleanText(formData.get("predictionType"));
+  const stakePoints = roundPointAmount(formData.get("stakePoints"));
+  if (!Number.isFinite(stakePoints) || stakePoints < 1) {
+    state.predictionNotice = "本次投入点数至少为 1。";
+    return null;
+  }
+  const existing = state.myPredictions.find((prediction) => prediction.match_id === match.id);
+  const existingStake = existing?.settled_at ? 0 : Number(existing?.stake_points || 0);
+  const allocatablePoints = Number(state.pointBalance || 0) + existingStake;
+  if (!Number.isFinite(state.pointBalance) || stakePoints > allocatablePoints) {
+    state.predictionNotice = "可用点数不足，请减少本次投入或联系管理员分配点数。";
+    return null;
+  }
   const base = {
     user_id: state.authSession.user.id,
     match_id: match.id,
@@ -1719,6 +1749,7 @@ function buildPredictionPayload(match, formData) {
     away_team: match.away,
     display_name: getCurrentDisplayName(),
     prediction_type: predictionType,
+    stake_points: stakePoints,
     is_public: true,
     model_snapshot_at: new Date().toISOString(),
   };
@@ -1857,6 +1888,8 @@ async function loadPredictions() {
     state.myAwardPredictions = [];
     state.awardPredictions = [];
     state.awardSchemaMissing = false;
+    state.pointBalance = null;
+    state.pointSchemaMissing = false;
     state.leaderboardRows = [];
     state.leaderboardNotice = "";
     resetAdminState();
@@ -1945,9 +1978,34 @@ async function loadPredictions() {
     state.awardSchemaMissing = false;
     if (/奖项预测/.test(state.awardPredictionNotice)) state.awardPredictionNotice = "";
   }
+  await loadPointBalance();
   await loadAdminData();
   await loadLeaderboardData();
   render();
+}
+
+async function loadPointBalance() {
+  if (!state.supabase?.rpc || !state.authSession?.user) {
+    state.pointBalance = null;
+    state.pointSchemaMissing = false;
+    return;
+  }
+
+  const result = await state.supabase.rpc("get_my_point_balance");
+  if (isAuthExpiredError(result.error)) {
+    await expireAuthSession();
+    return;
+  }
+  if (result.error) {
+    state.pointBalance = null;
+    state.pointSchemaMissing = isMissingPointSchemaError(result.error);
+    if (!state.pointSchemaMissing) state.authNotice = `读取点数失败：${result.error.message}`;
+    return;
+  }
+
+  const balance = Number(result.data);
+  state.pointBalance = Number.isFinite(balance) ? balance : 0;
+  state.pointSchemaMissing = false;
 }
 
 async function loadLeaderboardData() {
@@ -1992,7 +2050,10 @@ function normalizeLeaderboardRows(rows) {
       correct,
       total,
       accuracy: Number(row.accuracy ?? (total ? correct / total : 0)),
-      score: Number(row.score ?? row.points ?? correct),
+      score: Number(row.point_balance ?? row.score ?? row.points ?? 0),
+      wageredPoints: Number(row.wagered_points ?? 0),
+      payoutPoints: Number(row.payout_points ?? 0),
+      pendingStakePoints: Number(row.pending_stake_points ?? 0),
       latestAt: row.latest_prediction_at || row.latestAt || "",
     };
   });
@@ -2002,6 +2063,22 @@ function isMissingSettlementSchemaError(error) {
   return /get_public_leaderboard|admin_upsert_match_results|match_results|schema cache|function .* not found|could not find/i.test(
     `${error?.message || ""} ${error?.details || ""} ${error?.hint || ""}`,
   );
+}
+
+function isMissingPointSchemaError(error) {
+  return /submit_prediction|get_my_point_balance|admin_adjust_user_points|admin_upsert_prediction_markets|point_accounts|prediction_markets|stake_points|schema cache|function .* not found|could not find/i.test(
+    `${error?.message || ""} ${error?.details || ""} ${error?.hint || ""}`,
+  );
+}
+
+function formatPointError(error) {
+  const message = cleanText(error?.message);
+  if (/insufficient points/i.test(message)) return "可用点数不足。";
+  if (/prediction market unavailable/i.test(message)) return "比赛概率尚未同步，请稍后再试。";
+  if (/match already started|can no longer be changed/i.test(message)) return "比赛已经开始，不能再提交或修改预测。";
+  if (/stake must be at least/i.test(message)) return "本次投入点数至少为 1。";
+  if (/invalid prediction/i.test(message)) return "预测选项无效，请刷新页面后重试。";
+  return message || "未知错误";
 }
 
 function isMissingAwardPredictionSchemaError(error) {
@@ -2030,6 +2107,7 @@ async function loadAdminData(options = {}) {
   }
 
   state.isAdmin = true;
+  await syncAuthoritativePredictionMarkets();
   await syncSettledMatchResults();
   const usersResult = await state.supabase.rpc("admin_list_users");
   if (isAuthExpiredError(usersResult.error)) {
@@ -2058,6 +2136,57 @@ async function loadAdminData(options = {}) {
 
   state.isLoadingAdmin = false;
   renderAdminPanel();
+}
+
+async function syncAuthoritativePredictionMarkets() {
+  if (!state.supabase?.rpc || !state.isAdmin) return;
+  await loadPolymarketOddsCache({ silent: true });
+  const markets = buildAuthoritativePredictionMarketsPayload();
+  if (!markets.length) return;
+
+  const result = await state.supabase.rpc("admin_upsert_prediction_markets", { markets });
+  if (isAuthExpiredError(result.error)) {
+    await expireAuthSession();
+    return;
+  }
+  if (result.error) {
+    state.adminNotice = isMissingPointSchemaError(result.error)
+      ? "请重新运行 supabase/schema.sql 后启用点数和服务端概率。"
+      : `同步预测概率失败：${result.error.message}`;
+  } else if (/同步预测概率失败|点数和服务端概率/.test(state.adminNotice)) {
+    state.adminNotice = "";
+  }
+}
+
+function buildAuthoritativePredictionMarketsPayload() {
+  return state.matches
+    .map((match) => {
+      const kickoff = new Date(match.kickoffUtc);
+      if (!cleanText(match.id) || Number.isNaN(kickoff.getTime())) return null;
+      const probability = computeProbability(match);
+      const exactScore = getPolymarketExactScore(match);
+      return {
+        match_id: match.id,
+        match_label: `${match.home} vs ${match.away}`,
+        match_kickoff_utc: kickoff.toISOString(),
+        home_team: match.home,
+        away_team: match.away,
+        lambda_home: safeLambda(match.lambdaHome, 1.25),
+        lambda_away: safeLambda(match.lambdaAway, 1.05),
+        home_win_probability: probability.homeWin,
+        draw_probability: probability.draw,
+        away_win_probability: probability.awayWin,
+        exact_scores: (exactScore?.scores || []).map((score) => ({
+          home: score.home,
+          away: score.away,
+          probability: score.probability,
+        })),
+        exact_other_probability: exactScore?.otherProbability ?? null,
+        source: match.source || "WorldCupLookup probability model",
+        snapshot_at: exactScore?.updatedAt || match.polymarket?.wdl?.updatedAt || match.generatedAt || new Date().toISOString(),
+      };
+    })
+    .filter(Boolean);
 }
 
 async function syncSettledMatchResults() {
@@ -2133,6 +2262,15 @@ function resetAdminState() {
 }
 
 async function handleAdminAction(event) {
+  const pointButton = event.target.closest("[data-action='admin-add-points'], [data-action='admin-subtract-points']");
+  if (pointButton) {
+    await adjustAdminUserPoints(
+      pointButton.dataset.adminUserId,
+      pointButton.dataset.action === "admin-subtract-points" ? -1 : 1,
+    );
+    return;
+  }
+
   const deleteUserButton = event.target.closest("[data-action='admin-delete-user']");
   if (deleteUserButton) {
     await deleteAdminUser(deleteUserButton.dataset.adminUserId);
@@ -2155,6 +2293,50 @@ async function handleAdminAction(event) {
     renderAdminPanel();
     return;
   }
+}
+
+async function adjustAdminUserPoints(userId, direction) {
+  if (!state.supabase?.rpc || !state.isAdmin || !userId) return;
+  const input = els.adminPredictionsList?.querySelector(`[data-admin-point-input="${userId}"]`);
+  const amount = roundPointAmount(input?.value);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    state.adminNotice = "请输入大于 0 的点数。";
+    renderAdminPanel();
+    return;
+  }
+
+  const user = state.adminUsers.find((item) => item.user_id === userId);
+  const name = user?.username || `用户 ${shortUserId(userId)}`;
+  const adjustment = direction < 0 ? -amount : amount;
+  state.isLoadingAdmin = true;
+  state.adminNotice = `正在为 ${name}${direction < 0 ? "扣除" : "增加"} ${formatPointAmount(amount)}...`;
+  renderAdminPanel();
+
+  const result = await state.supabase.rpc("admin_adjust_user_points", {
+    target_user_id: userId,
+    adjustment,
+    note: `管理员${direction < 0 ? "扣除" : "增加"}点数`,
+  });
+  if (isAuthExpiredError(result.error)) {
+    await expireAuthSession();
+    return;
+  }
+  if (result.error) {
+    state.adminNotice = isMissingPointSchemaError(result.error)
+      ? "请重新运行 supabase/schema.sql 后再分配点数。"
+      : `点数调整失败：${formatPointError(result.error)}`;
+    state.isLoadingAdmin = false;
+    renderAdminPanel();
+    return;
+  }
+
+  const balance = Number(result.data);
+  if (user && Number.isFinite(balance)) user.point_balance = balance;
+  if (userId === state.authSession?.user?.id && Number.isFinite(balance)) state.pointBalance = balance;
+  state.adminNotice = `已为 ${name}${direction < 0 ? "扣除" : "增加"} ${formatPointAmount(amount)}，当前 ${formatPointAmount(balance)}。`;
+  state.isLoadingAdmin = false;
+  await loadLeaderboardData();
+  render();
 }
 
 async function deleteAdminUserPredictions(userId) {
@@ -2902,7 +3084,11 @@ function renderEditor(match) {
 function renderPredictionForm(match) {
   const user = state.authSession?.user;
   const canPredict = isMatchPredictable(match);
-  const disabled = !user || !state.supabase || !canPredict;
+  const existing = state.myPredictions.find((prediction) => prediction.match_id === match.id);
+  const existingStake = existing?.settled_at ? 0 : Number(existing?.stake_points || 0);
+  const allocatablePoints = Math.max(0, Number(state.pointBalance || 0) + existingStake);
+  const hasPoints = allocatablePoints >= 1;
+  const disabled = !user || !state.supabase || !canPredict || state.pointSchemaMissing || !hasPoints;
   const disabledAttr = disabled ? "disabled" : "";
   const status = !state.supabase
     ? "未连接 Supabase"
@@ -2910,10 +3096,23 @@ function renderPredictionForm(match) {
       ? "登录后可提交预测"
       : !canPredict
         ? "比赛已开始或已完赛"
-        : "可提交或更新预测";
+        : state.pointSchemaMissing
+          ? "点数功能待启用"
+          : !hasPoints
+            ? "点数不足，请联系管理员"
+            : `可分配 ${formatPointAmount(allocatablePoints)}`;
+  const predictionType = isScorePrediction(existing || {}) ? "score" : "outcome";
+  const outcome = ["home", "draw", "away"].includes(existing?.outcome) ? existing.outcome : "home";
+  const predictedHomeScore = hasStoredScore(existing?.home_score) ? Number(existing.home_score) : 1;
+  const predictedAwayScore = hasStoredScore(existing?.away_score) ? Number(existing.away_score) : 1;
+  const defaultStake = existingStake >= 1 ? existingStake : Math.min(10, allocatablePoints);
+  const initialProbability = predictionType === "score"
+    ? scoreProbability(match, predictedHomeScore, predictedAwayScore)
+    : getOutcomeProbabilitySnapshot(match, outcome).model_probability;
+  const initialPayout = defaultStake >= 1 && initialProbability > 0 ? defaultStake / initialProbability : 0;
 
   return `
-    <form class="prediction-form" data-prediction-form data-prediction-type="outcome">
+    <form class="prediction-form" data-prediction-form data-prediction-type="${predictionType}">
       <div class="prediction-form-head">
         <h2 class="section-title">提交预测</h2>
         <span>${escapeHtml(status)}</span>
@@ -2923,30 +3122,56 @@ function renderPredictionForm(match) {
         <label>
           类型
           <select name="predictionType" ${disabledAttr}>
-            <option value="outcome">胜平负</option>
-            <option value="score">具体比分</option>
+            <option value="outcome" ${predictionType === "outcome" ? "selected" : ""}>胜平负</option>
+            <option value="score" ${predictionType === "score" ? "selected" : ""}>具体比分</option>
           </select>
         </label>
         <label data-outcome-prediction-field>
           胜平负
           <select name="outcome" ${disabledAttr}>
-            <option value="home">${escapeHtml(match.homeCode || "A")} 胜</option>
-            <option value="draw">平局</option>
-            <option value="away">${escapeHtml(match.awayCode || "B")} 胜</option>
+            <option value="home" ${outcome === "home" ? "selected" : ""}>${escapeHtml(match.homeCode || "A")} 胜</option>
+            <option value="draw" ${outcome === "draw" ? "selected" : ""}>平局</option>
+            <option value="away" ${outcome === "away" ? "selected" : ""}>${escapeHtml(match.awayCode || "B")} 胜</option>
           </select>
         </label>
         <label data-score-prediction-field>
           A队进球
-          <input name="predictedHomeScore" type="number" min="0" max="20" step="1" value="1" ${disabledAttr} />
+          <input name="predictedHomeScore" type="number" min="0" max="20" step="1" value="${predictedHomeScore}" ${disabledAttr} />
         </label>
         <label data-score-prediction-field>
           B队进球
-          <input name="predictedAwayScore" type="number" min="0" max="20" step="1" value="1" ${disabledAttr} />
+          <input name="predictedAwayScore" type="number" min="0" max="20" step="1" value="${predictedAwayScore}" ${disabledAttr} />
         </label>
-        <button type="button" class="action-button primary prediction-submit" data-action="submit-prediction" ${disabledAttr}>提交</button>
+        <label>
+          本次投入
+          <input name="stakePoints" type="number" min="1" max="${allocatablePoints}" step="0.01" value="${defaultStake >= 1 ? defaultStake : 1}" ${disabledAttr} />
+        </label>
+        <button type="button" class="action-button primary prediction-submit" data-action="submit-prediction" ${disabledAttr}>${existing ? "更新" : "提交"}</button>
       </div>
+      <div class="prediction-payout-preview" data-payout-preview>${initialPayout > 0 ? `命中预计返还 ${escapeHtml(formatPointAmount(initialPayout))} · 当前概率 ${escapeHtml(formatPercent(initialProbability))}` : ""}</div>
     </form>
   `;
+}
+
+function updatePredictionPayoutPreview(match, form) {
+  const preview = form?.querySelector("[data-payout-preview]");
+  if (!match || !preview) return;
+  const formData = new FormData(form);
+  const stake = roundPointAmount(formData.get("stakePoints"));
+  const predictionType = cleanText(formData.get("predictionType"));
+  let probability = null;
+  if (predictionType === "outcome") {
+    probability = getOutcomeProbabilitySnapshot(match, cleanText(formData.get("outcome"))).model_probability;
+  } else if (predictionType === "score") {
+    const homeScore = Number(formData.get("predictedHomeScore"));
+    const awayScore = Number(formData.get("predictedAwayScore"));
+    if (Number.isInteger(homeScore) && Number.isInteger(awayScore) && homeScore >= 0 && awayScore >= 0) {
+      probability = scoreProbability(match, homeScore, awayScore);
+    }
+  }
+  preview.textContent = Number.isFinite(stake) && stake >= 1 && Number(probability) > 0
+    ? `命中预计返还 ${formatPointAmount(stake / probability)} · 当前概率 ${formatPercent(probability)}`
+    : "";
 }
 
 function renderInput(label, name, value, type = "text", className = "", step = "", min = "") {
@@ -3395,6 +3620,7 @@ function renderAdminUsers() {
     return `
       <button class="admin-user-card ${selected ? "is-selected" : ""}" type="button" data-admin-user-id="${escapeHtml(user.user_id)}">
         <strong>${escapeHtml(user.username || `用户 ${shortUserId(user.user_id)}`)}</strong>
+        <span>点数 ${escapeHtml(formatPointAmount(user.point_balance || 0))}</span>
         <span>预测 ${Number(user.prediction_count || 0)}</span>
         <span>最近 ${escapeHtml(formatDateFull(user.latest_prediction_at || user.auth_created_at))}</span>
       </button>
@@ -3409,6 +3635,7 @@ function renderAdminPredictions() {
 
   const deleteDisabled = Number(user.prediction_count || 0) <= 0 ? "disabled" : "";
   const deleteUserDisabled = user.user_id === state.authSession?.user?.id ? "disabled" : "";
+  const subtractDisabled = Number(user.point_balance || 0) <= 0 ? "disabled" : "";
   const records = state.adminPredictions.length
     ? state.adminPredictions.map((prediction) => renderPredictionCard(prediction, false)).join("")
     : `<div class="empty-list compact-empty">这个用户没有预测记录</div>`;
@@ -3417,7 +3644,16 @@ function renderAdminPredictions() {
     <div class="admin-user-summary">
       <div>
         <strong>${escapeHtml(user.username || `用户 ${shortUserId(user.user_id)}`)}</strong>
+        <span>可用 ${escapeHtml(formatPointAmount(user.point_balance || 0))} · 待结算投入 ${escapeHtml(formatPointAmount(user.pending_stake_points || 0))}</span>
         <span>注册 ${escapeHtml(formatDateFull(user.auth_created_at))}</span>
+      </div>
+      <div class="admin-point-controls">
+        <label>
+          调整点数
+          <input type="number" min="0.01" step="0.01" value="100" data-admin-point-input="${escapeHtml(user.user_id)}" />
+        </label>
+        <button type="button" class="action-button" data-action="admin-add-points" data-admin-user-id="${escapeHtml(user.user_id)}">增加</button>
+        <button type="button" class="action-button" data-action="admin-subtract-points" data-admin-user-id="${escapeHtml(user.user_id)}" ${subtractDisabled}>扣除</button>
       </div>
       <div class="admin-actions">
         <button type="button" class="action-button danger" data-action="admin-delete-user-predictions" data-admin-user-id="${escapeHtml(user.user_id)}" ${deleteDisabled}>清空预测</button>
@@ -3441,7 +3677,7 @@ function renderLeaderboard() {
 
   const rows = state.leaderboardRows;
   if (!rows.length) {
-    return `<div class="empty-list compact-empty">暂无已结算的预测。如果已有完赛预测，请等待自动赛果同步任务写入排行榜数据。</div>`;
+    return `<div class="empty-list compact-empty">暂无已分配点数的用户</div>`;
   }
 
   return rows.map(renderLeaderboardRow).join("");
@@ -3452,18 +3688,23 @@ function renderLeaderboardRow(row, index) {
     <article class="leaderboard-row">
       <span class="leaderboard-rank">#${index + 1}</span>
       <strong>${escapeHtml(row.displayName)}</strong>
-      <span class="leaderboard-score">${escapeHtml(formatLeaderboardScore(row.score))}</span>
-      <span class="leaderboard-record">命中 ${row.correct}/${row.total} · ${formatPercent(row.accuracy)}</span>
+      <span class="leaderboard-score">${escapeHtml(formatPointAmount(row.score))}</span>
+      <span class="leaderboard-record">命中 ${row.correct}/${row.total}${row.pendingStakePoints > 0 ? ` · 待结算 ${escapeHtml(formatPointAmount(row.pendingStakePoints))}` : ""}</span>
     </article>
   `;
 }
 
-function formatLeaderboardScore(score) {
-  const value = Number(score);
-  if (!Number.isFinite(value)) return "0 分";
-  if (value >= 100) return `${value.toFixed(0)} 分`;
-  if (value >= 10) return `${value.toFixed(1)} 分`;
-  return `${value.toFixed(2)} 分`;
+function formatPointAmount(points) {
+  const value = Number(points);
+  if (!Number.isFinite(value)) return "0 点";
+  const rounded = Math.round(value * 100) / 100;
+  return `${new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 2 }).format(rounded)} 点`;
+}
+
+function roundPointAmount(value) {
+  const points = Number(value);
+  if (!Number.isFinite(points)) return Number.NaN;
+  return Math.round(points * 100) / 100;
 }
 
 function renderPredictionList({ predictions, emptyText, showOwner }) {
@@ -3520,7 +3761,18 @@ function hasStoredScore(value) {
 
 function formatPredictionMeta(prediction) {
   const probability = formatStoredModelProbability(prediction);
-  return probability ? `当时系统概率 ${probability}` : "";
+  const parts = probability ? [`当时系统概率 ${probability}`] : [];
+  const stake = Number(prediction.stake_points);
+  if (Number.isFinite(stake) && stake > 0) {
+    if (!prediction.settled_at) {
+      parts.push(`投入 ${formatPointAmount(stake)} · 待结算`);
+    } else if (prediction.is_correct === true) {
+      parts.push(`投入 ${formatPointAmount(stake)} · 命中返还 ${formatPointAmount(prediction.payout_points)}`);
+    } else {
+      parts.push(`投入 ${formatPointAmount(stake)} · 未命中`);
+    }
+  }
+  return parts.join(" · ");
 }
 
 function formatStoredModelProbability(prediction) {

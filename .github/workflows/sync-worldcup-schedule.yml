@@ -28,6 +28,13 @@ jobs:
         continue-on-error: true
         run: node scripts/sync-polymarket-odds.mjs data/worldcup26-games.json data/polymarket-odds.json
 
+      - name: Sync authoritative prediction markets to Supabase
+        continue-on-error: true
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: node scripts/sync-prediction-markets.mjs data/worldcup26-games.json data/polymarket-odds.json
+
       - name: Commit schedule cache
         run: |
           git config user.name "github-actions[bot]"
