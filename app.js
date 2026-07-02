@@ -2041,22 +2041,15 @@ async function loadLeaderboardData() {
 }
 
 function normalizeLeaderboardRows(rows) {
-  return rows.map((row) => {
-    const correct = Number(row.correct_count ?? row.correct ?? 0);
-    const total = Number(row.settled_count ?? row.total ?? 0);
-    return {
+  return rows
+    .map((row) => ({
       userId: row.user_id || row.userId || "",
       displayName: cleanText(row.display_name || row.displayName) || `用户 ${shortUserId(row.user_id || row.userId)}`,
-      correct,
-      total,
-      accuracy: Number(row.accuracy ?? (total ? correct / total : 0)),
-      score: Number(row.point_balance ?? row.score ?? row.points ?? 0),
-      wageredPoints: Number(row.wagered_points ?? 0),
-      payoutPoints: Number(row.payout_points ?? 0),
-      pendingStakePoints: Number(row.pending_stake_points ?? 0),
-      latestAt: row.latest_prediction_at || row.latestAt || "",
-    };
-  });
+      score: Number(row.cumulative_return_points ?? row.payout_points ?? 0),
+      latestAt: row.latest_return_at || row.latest_prediction_at || row.latestAt || "",
+    }))
+    .filter((row) => Number.isFinite(row.score) && row.score > 0)
+    .sort((a, b) => b.score - a.score || new Date(a.latestAt || 0) - new Date(b.latestAt || 0));
 }
 
 function isMissingSettlementSchemaError(error) {
@@ -3677,7 +3670,7 @@ function renderLeaderboard() {
 
   const rows = state.leaderboardRows;
   if (!rows.length) {
-    return `<div class="empty-list compact-empty">暂无已分配点数的用户</div>`;
+    return `<div class="empty-list compact-empty">暂无预测返还记录</div>`;
   }
 
   return rows.map(renderLeaderboardRow).join("");
@@ -3689,7 +3682,6 @@ function renderLeaderboardRow(row, index) {
       <span class="leaderboard-rank">#${index + 1}</span>
       <strong>${escapeHtml(row.displayName)}</strong>
       <span class="leaderboard-score">${escapeHtml(formatPointAmount(row.score))}</span>
-      <span class="leaderboard-record">命中 ${row.correct}/${row.total}${row.pendingStakePoints > 0 ? ` · 待结算 ${escapeHtml(formatPointAmount(row.pendingStakePoints))}` : ""}</span>
     </article>
   `;
 }

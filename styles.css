@@ -932,7 +932,7 @@ h1 {
 
 .leaderboard-row {
   display: grid;
-  grid-template-columns: 52px minmax(0, 1fr) auto auto;
+  grid-template-columns: 52px minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
   min-width: 0;
@@ -955,12 +955,6 @@ h1 {
 .leaderboard-score {
   font-size: 1.05rem;
   font-weight: 950;
-}
-
-.leaderboard-record {
-  color: var(--muted);
-  font-size: 0.82rem;
-  font-weight: 850;
 }
 
 .prediction-list {
@@ -1438,8 +1432,7 @@ h1 {
     grid-column: 1;
   }
 
-  .leaderboard-score,
-  .leaderboard-record {
+  .leaderboard-score {
     grid-column: 2;
     justify-self: start;
   }

@@ -1296,15 +1296,8 @@ create or replace function public.get_public_leaderboard(min_predictions integer
 returns table (
   user_id uuid,
   display_name text,
-  correct_count bigint,
-  settled_count bigint,
-  accuracy numeric,
-  score numeric,
-  point_balance numeric,
-  wagered_points numeric,
-  payout_points numeric,
-  pending_stake_points numeric,
-  latest_prediction_at timestamptz
+  cumulative_return_points numeric,
+  latest_return_at timestamptz
 )
 language plpgsql
 security definer
@@ -1316,69 +1309,34 @@ begin
   end if;
 
   return query
-  with prediction_stats as (
+  with returned_points as (
     select
-      predictions.user_id,
-      count(*) filter (
-        where predictions.stake_points is not null
-          and predictions.settled_at is not null
-          and predictions.is_correct is true
-      ) as correct_count,
-      count(*) filter (
-        where predictions.stake_points is not null
-          and predictions.settled_at is not null
-      ) as settled_count,
-      coalesce(sum(predictions.stake_points) filter (
-        where predictions.stake_points is not null
-      ), 0) as wagered_points,
-      coalesce(sum(predictions.payout_points) filter (
-        where predictions.stake_points is not null
-      ), 0) as payout_points,
-      coalesce(sum(predictions.stake_points) filter (
-        where predictions.stake_points is not null
-          and predictions.settled_at is null
-      ), 0) as pending_stake_points,
-      max(predictions.created_at) filter (
-        where predictions.stake_points is not null
-      ) as latest_prediction_at
-    from public.predictions predictions
-    where predictions.is_public = true
-    group by predictions.user_id
+      transactions.user_id,
+      sum(transactions.amount) as cumulative_return_points,
+      max(transactions.created_at) as latest_return_at
+    from public.point_transactions transactions
+    where transactions.kind = 'prediction_settlement'
+    group by transactions.user_id
+    having sum(transactions.amount) > 0
   )
   select
-    accounts.user_id,
+    returned.user_id,
     coalesce(
       nullif(profiles.username, ''),
       nullif(users.raw_user_meta_data ->> 'display_name', ''),
       nullif(users.raw_user_meta_data ->> 'username', ''),
-      '用户 ' || left(accounts.user_id::text, 8)
+      '用户 ' || left(returned.user_id::text, 8)
     ) as display_name,
-    coalesce(stats.correct_count, 0)::bigint as correct_count,
-    coalesce(stats.settled_count, 0)::bigint as settled_count,
-    case
-      when coalesce(stats.settled_count, 0) > 0
-      then stats.correct_count::numeric / stats.settled_count::numeric
-      else 0::numeric
-    end as accuracy,
-    accounts.balance as score,
-    accounts.balance as point_balance,
-    coalesce(stats.wagered_points, 0) as wagered_points,
-    coalesce(stats.payout_points, 0) as payout_points,
-    coalesce(stats.pending_stake_points, 0) as pending_stake_points,
-    stats.latest_prediction_at
-  from public.point_accounts accounts
-  join auth.users users on users.id = accounts.user_id
-  left join public.user_profiles profiles on profiles.user_id = accounts.user_id
-  left join prediction_stats stats on stats.user_id = accounts.user_id
+    returned.cumulative_return_points,
+    returned.latest_return_at
+  from returned_points returned
+  join auth.users users on users.id = returned.user_id
+  left join public.user_profiles profiles on profiles.user_id = returned.user_id
   where users.email like '%@users.worldcup-lookup.app'
-    and (accounts.balance <> 0 or coalesce(stats.wagered_points, 0) > 0)
-    and coalesce(stats.settled_count, 0) >= greatest(0, coalesce(min_predictions, 0))
   order by
-    accounts.balance desc,
-    coalesce(stats.payout_points, 0) desc,
-    coalesce(stats.correct_count, 0) desc,
-    stats.latest_prediction_at desc nulls last,
-    accounts.user_id
+    returned.cumulative_return_points desc,
+    returned.latest_return_at asc,
+    returned.user_id
   limit 50;
 end;
 $$;
