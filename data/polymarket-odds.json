@@ -1,7 +1,7 @@
 {
   "source": "Polymarket Gamma API",
   "sourceUrl": "https://gamma-api.polymarket.com",
-  "generatedAt": "2026-07-12T18:12:25.157Z",
+  "generatedAt": "2026-07-12T19:30:33.553Z",
   "matches": [
     {
       "matchId": "worldcup26-101",
@@ -26,7 +26,7 @@
           "awayWin": "2879970"
         },
         "eventSlug": "fifwc-fra-esp-2026-07-14",
-        "updatedAt": "2026-07-12T18:08:34.440683Z"
+        "updatedAt": "2026-07-12T19:30:16.138331Z"
       },
       "exactScore": {
         "scores": [
@@ -146,7 +146,7 @@
         "otherProbability": 0.07403751233958542,
         "rawTotal": 1.0129999999999997,
         "eventSlug": "fifwc-fra-esp-2026-07-14-exact-score",
-        "updatedAt": "2026-07-12T18:08:14.449846Z"
+        "updatedAt": "2026-07-12T19:30:16.138331Z"
       }
     },
     {
@@ -158,12 +158,12 @@
       "homeCode": "ENG",
       "awayCode": "ARG",
       "wdl": {
-        "homeWin": 0.373134328358209,
-        "draw": 0.32338308457711445,
-        "awayWin": 0.3034825870646766,
+        "homeWin": 0.3768844221105528,
+        "draw": 0.31658291457286436,
+        "awayWin": 0.30653266331658297,
         "raw": {
           "homeWin": 0.375,
-          "draw": 0.325,
+          "draw": 0.315,
           "awayWin": 0.305
         },
         "marketIds": {
@@ -172,7 +172,7 @@
           "awayWin": "2891167"
         },
         "eventSlug": "fifwc-eng-arg-2026-07-15",
-        "updatedAt": "2026-07-12T18:08:14.449846Z"
+        "updatedAt": "2026-07-12T19:30:16.138331Z"
       },
       "exactScore": {
         "scores": [
@@ -292,7 +292,7 @@
         "otherProbability": 0.05446927374301678,
         "rawTotal": 1.0739999999999996,
         "eventSlug": "fifwc-eng-arg-2026-07-15-exact-score",
-        "updatedAt": "2026-07-12T18:08:14.449846Z"
+        "updatedAt": "2026-07-12T19:30:16.138331Z"
       }
     }
   ],
@@ -583,7 +583,7 @@
       "homeScore": 1,
       "awayScore": 1,
       "eventSlug": "fifwc-nor-eng-2026-07-11-exact-score",
-      "resolvedAt": "2026-07-12T18:10:19.236769Z",
+      "resolvedAt": "2026-07-12T19:30:22.447679Z",
       "resolutionVerified": true
     },
     {
@@ -592,7 +592,7 @@
       "homeScore": 1,
       "awayScore": 1,
       "eventSlug": "fifwc-arg-che-2026-07-11-exact-score",
-      "resolvedAt": "2026-07-12T18:10:19.236769Z",
+      "resolvedAt": "2026-07-12T19:30:22.447679Z",
       "resolutionVerified": true
     }
   ]
