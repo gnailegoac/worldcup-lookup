@@ -1,7 +1,7 @@
 {
   "source": "Polymarket Gamma API",
   "sourceUrl": "https://gamma-api.polymarket.com",
-  "generatedAt": "2026-07-14T11:04:55.432Z",
+  "generatedAt": "2026-07-14T12:20:30.860Z",
   "matches": [
     {
       "matchId": "worldcup26-101",
@@ -26,7 +26,7 @@
           "awayWin": "2879970"
         },
         "eventSlug": "fifwc-fra-esp-2026-07-14",
-        "updatedAt": "2026-07-14T11:04:11.1563Z"
+        "updatedAt": "2026-07-14T12:18:52.466626Z"
       },
       "exactScore": {
         "scores": [
@@ -117,8 +117,8 @@
           {
             "home": 3,
             "away": 1,
-            "probability": 0.04964894684052158,
-            "rawProbability": 0.0495,
+            "probability": 0.048645937813440336,
+            "rawProbability": 0.0485,
             "marketSlug": "fifwc-fra-esp-2026-07-14-exact-score-3-1"
           },
           {
@@ -131,8 +131,8 @@
           {
             "home": 3,
             "away": 2,
-            "probability": 0.028585757271815455,
-            "rawProbability": 0.0285,
+            "probability": 0.029588766298896698,
+            "rawProbability": 0.0295,
             "marketSlug": "fifwc-fra-esp-2026-07-14-exact-score-3-2"
           },
           {
@@ -146,7 +146,7 @@
         "otherProbability": 0.0752256770310933,
         "rawTotal": 0.9969999999999997,
         "eventSlug": "fifwc-fra-esp-2026-07-14-exact-score",
-        "updatedAt": "2026-07-14T11:04:48.449297Z"
+        "updatedAt": "2026-07-14T12:18:52.466626Z"
       }
     },
     {
@@ -172,7 +172,7 @@
           "awayWin": "2891167"
         },
         "eventSlug": "fifwc-eng-arg-2026-07-15",
-        "updatedAt": "2026-07-14T11:02:48.048427Z"
+        "updatedAt": "2026-07-14T12:18:52.466626Z"
       },
       "exactScore": {
         "scores": [
@@ -292,7 +292,7 @@
         "otherProbability": 0.05539215686274511,
         "rawTotal": 1.0199999999999998,
         "eventSlug": "fifwc-eng-arg-2026-07-15-exact-score",
-        "updatedAt": "2026-07-14T11:04:48.449297Z"
+        "updatedAt": "2026-07-14T12:18:52.466626Z"
       }
     }
   ],
