@@ -1,7 +1,7 @@
 {
   "source": "Polymarket Gamma API",
   "sourceUrl": "https://gamma-api.polymarket.com",
-  "generatedAt": "2026-07-19T21:26:17.727Z",
+  "generatedAt": "2026-07-19T22:23:44.414Z",
   "matches": [
     {
       "matchId": "worldcup26-104",
@@ -12,13 +12,13 @@
       "homeCode": "ESP",
       "awayCode": "ARG",
       "wdl": {
-        "homeWin": 0.0012484394506866417,
-        "draw": 0.9975031210986268,
-        "awayWin": 0.0012484394506866417,
+        "homeWin": 0,
+        "draw": 1,
+        "awayWin": 0,
         "raw": {
-          "homeWin": 0.00125,
+          "homeWin": 0,
           "draw": 0.99875,
-          "awayWin": 0.00125
+          "awayWin": 0
         },
         "marketIds": {
           "homeWin": "2941974",
@@ -26,7 +26,7 @@
           "awayWin": "2941976"
         },
         "eventSlug": "fifwc-esp-arg-2026-07-19",
-        "updatedAt": "2026-07-19T21:25:55.57458Z"
+        "updatedAt": "2026-07-19T22:23:33.049484Z"
       },
       "exactScore": {
         "scores": [
@@ -146,7 +146,7 @@
         "otherProbability": 0.0004962779156327548,
         "rawTotal": 1.0074999999999992,
         "eventSlug": "fifwc-esp-arg-2026-07-19-exact-score",
-        "updatedAt": "2026-07-19T21:25:41.513004Z"
+        "updatedAt": "2026-07-19T22:23:33.049484Z"
       }
     }
   ],
@@ -465,6 +465,15 @@
       "awayScore": 2,
       "eventSlug": "fifwc-eng-arg-2026-07-15-exact-score",
       "resolvedAt": "2026-07-16T21:35:24.051796Z",
+      "resolutionVerified": true
+    },
+    {
+      "matchId": "worldcup26-104",
+      "kickoffUtc": "2026-07-19T19:00:00.000Z",
+      "homeScore": 0,
+      "awayScore": 0,
+      "eventSlug": "fifwc-esp-arg-2026-07-19-exact-score",
+      "resolvedAt": "2026-07-19T22:23:33.049484Z",
       "resolutionVerified": true
     }
   ]
