@@ -1,7 +1,7 @@
 {
   "source": "Polymarket Gamma API",
   "sourceUrl": "https://gamma-api.polymarket.com",
-  "generatedAt": "2026-07-19T14:43:28.028Z",
+  "generatedAt": "2026-07-19T15:38:55.028Z",
   "matches": [
     {
       "matchId": "worldcup26-104",
@@ -12,13 +12,13 @@
       "homeCode": "ESP",
       "awayCode": "ARG",
       "wdl": {
-        "homeWin": 0.4225526641883519,
-        "draw": 0.3135068153655514,
-        "awayWin": 0.2639405204460966,
+        "homeWin": 0.4236024844720498,
+        "draw": 0.3142857142857143,
+        "awayWin": 0.26211180124223604,
         "raw": {
           "homeWin": 0.42625,
           "draw": 0.31625,
-          "awayWin": 0.26625
+          "awayWin": 0.26375
         },
         "marketIds": {
           "homeWin": "2941974",
@@ -26,127 +26,127 @@
           "awayWin": "2941976"
         },
         "eventSlug": "fifwc-esp-arg-2026-07-19",
-        "updatedAt": "2026-07-19T14:41:35.615819Z"
+        "updatedAt": "2026-07-19T15:34:27.939217Z"
       },
       "exactScore": {
         "scores": [
           {
             "home": 0,
             "away": 0,
-            "probability": 0.09900990099009903,
+            "probability": 0.09845288326300985,
             "rawProbability": 0.105,
             "marketSlug": "fifwc-esp-arg-2026-07-19-exact-score-0-0"
           },
           {
             "home": 0,
             "away": 1,
-            "probability": 0.08015087223008018,
+            "probability": 0.07969995311767467,
             "rawProbability": 0.085,
             "marketSlug": "fifwc-esp-arg-2026-07-19-exact-score-0-1"
           },
           {
             "home": 1,
             "away": 0,
-            "probability": 0.10843941537010847,
+            "probability": 0.10782934833567748,
             "rawProbability": 0.115,
             "marketSlug": "fifwc-esp-arg-2026-07-19-exact-score-1-0"
           },
           {
             "home": 0,
             "away": 2,
-            "probability": 0.03724658180103726,
-            "rawProbability": 0.0395,
+            "probability": 0.036099390529770285,
+            "rawProbability": 0.0385,
             "marketSlug": "fifwc-esp-arg-2026-07-19-exact-score-0-2"
           },
           {
             "home": 1,
             "away": 1,
-            "probability": 0.1461574728901462,
+            "probability": 0.14533520862634788,
             "rawProbability": 0.155,
             "marketSlug": "fifwc-esp-arg-2026-07-19-exact-score-1-1"
           },
           {
             "home": 2,
             "away": 0,
-            "probability": 0.08015087223008018,
+            "probability": 0.07969995311767467,
             "rawProbability": 0.085,
             "marketSlug": "fifwc-esp-arg-2026-07-19-exact-score-2-0"
           },
           {
             "home": 0,
             "away": 3,
-            "probability": 0.00895803866100896,
+            "probability": 0.008907641819034225,
             "rawProbability": 0.0095,
             "marketSlug": "fifwc-esp-arg-2026-07-19-exact-score-0-3"
           },
           {
             "home": 1,
             "away": 2,
-            "probability": 0.07072135785007073,
+            "probability": 0.07032348804500704,
             "rawProbability": 0.075,
             "marketSlug": "fifwc-esp-arg-2026-07-19-exact-score-1-2"
           },
           {
             "home": 2,
             "away": 1,
-            "probability": 0.0895803866100896,
+            "probability": 0.08907641819034226,
             "rawProbability": 0.095,
             "marketSlug": "fifwc-esp-arg-2026-07-19-exact-score-2-1"
           },
           {
             "home": 3,
             "away": 0,
-            "probability": 0.02687411598302688,
-            "rawProbability": 0.0285,
+            "probability": 0.03047351148616972,
+            "rawProbability": 0.0325,
             "marketSlug": "fifwc-esp-arg-2026-07-19-exact-score-3-0"
           },
           {
             "home": 1,
             "away": 3,
-            "probability": 0.025931164545025937,
-            "rawProbability": 0.0275,
+            "probability": 0.027660571964369437,
+            "rawProbability": 0.0295,
             "marketSlug": "fifwc-esp-arg-2026-07-19-exact-score-1-3"
           },
           {
             "home": 2,
             "away": 2,
-            "probability": 0.051862329090051874,
+            "probability": 0.05157055789967183,
             "rawProbability": 0.055,
             "marketSlug": "fifwc-esp-arg-2026-07-19-exact-score-2-2"
           },
           {
             "home": 3,
             "away": 1,
-            "probability": 0.03913248467703914,
-            "rawProbability": 0.0415,
+            "probability": 0.03984997655883733,
+            "rawProbability": 0.0425,
             "marketSlug": "fifwc-esp-arg-2026-07-19-exact-score-3-1"
           },
           {
             "home": 2,
             "away": 3,
-            "probability": 0.03536067892503537,
-            "rawProbability": 0.0375,
+            "probability": 0.03703703703703704,
+            "rawProbability": 0.0395,
             "marketSlug": "fifwc-esp-arg-2026-07-19-exact-score-2-3"
           },
           {
             "home": 3,
             "away": 2,
-            "probability": 0.027345591702027352,
-            "rawProbability": 0.029,
+            "probability": 0.030942334739803103,
+            "rawProbability": 0.033,
             "marketSlug": "fifwc-esp-arg-2026-07-19-exact-score-3-2"
           },
           {
             "home": 3,
             "away": 3,
-            "probability": 0.02121640735502122,
-            "rawProbability": 0.0225,
+            "probability": 0.015471167369901551,
+            "rawProbability": 0.0165,
             "marketSlug": "fifwc-esp-arg-2026-07-19-exact-score-3-3"
           }
         ],
-        "otherProbability": 0.051862329090051874,
-        "rawTotal": 1.0604999999999998,
+        "otherProbability": 0.05157055789967183,
+        "rawTotal": 1.0664999999999998,
         "eventSlug": "fifwc-esp-arg-2026-07-19-exact-score",
-        "updatedAt": "2026-07-19T14:41:35.615819Z"
+        "updatedAt": "2026-07-19T15:33:21.779675Z"
       }
     }
   ],
