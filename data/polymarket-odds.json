@@ -1,7 +1,7 @@
 {
   "source": "Polymarket Gamma API",
   "sourceUrl": "https://gamma-api.polymarket.com",
-  "generatedAt": "2026-07-20T16:16:52.502Z",
+  "generatedAt": "2026-07-20T18:22:36.343Z",
   "matches": [],
   "unmatchedEvents": [],
   "settledResults": [
@@ -326,7 +326,7 @@
       "homeScore": 0,
       "awayScore": 0,
       "eventSlug": "fifwc-esp-arg-2026-07-19-exact-score",
-      "resolvedAt": "2026-07-20T16:15:24.922851Z",
+      "resolvedAt": "2026-07-20T18:21:25.526688Z",
       "resolutionVerified": true
     }
   ]
